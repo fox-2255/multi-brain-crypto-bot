@@ -6,6 +6,7 @@ const path = require('path');
 // Import Brains
 const TechnicalBrain = require('./brains/technicalBrain');
 const RiskBrain = require('./brains/riskBrain');
+const SentimentBrain = require('./brains/sentimentBrain');
 
 const app = express();
 app.use(cors());
@@ -23,6 +24,7 @@ try {
 // Initialize Brain Instances
 const technicalBrain = new TechnicalBrain(config.brains?.technical || {});
 const riskBrain = new RiskBrain(config.brains?.risk || {});
+const sentimentBrain = new SentimentBrain(config.brains?.sentiment || {});
 
 const PORT = config.port || 3000;
 
@@ -45,13 +47,15 @@ app.post('/api/analyze', (req, res) => {
         // Run Brains
         const techResult = technicalBrain.analyze(marketData);
         const riskResult = riskBrain.evaluateRisk(accountBalance, openPositions);
+        const sentimentResult = sentimentBrain.analyze(marketData);
 
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
             analysis: {
                 technical: techResult,
-                risk: riskResult
+                risk: riskResult,
+                sentiment: sentimentResult
             }
         });
     } catch (error) {
