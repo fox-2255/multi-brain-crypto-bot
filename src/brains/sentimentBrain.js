@@ -7,7 +7,7 @@ class SentimentBrain {
     analyze(marketData) {
         if (!this.enabled) return { brain: this.name, signal: "NEUTRAL", score: 0 };
 
-        const sentimentScore = marketData.sentimentScore || 0.5; // Scale: 0 (bearish) to 1 (bullish)
+        const sentimentScore = marketData.sentimentScore !== undefined ? marketData.sentimentScore : 0.5;
         
         let signal = "NEUTRAL";
         let score = 0;
