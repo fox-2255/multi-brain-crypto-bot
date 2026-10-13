@@ -4,12 +4,18 @@ class SentimentBrain {
         this.enabled = config.enabled !== undefined ? config.enabled : true;
     }
 
-    analyze(marketData) {
+    analyze(data) {
         if (!this.enabled) return { brain: this.name, signal: "NEUTRAL", score: 0 };
 
-        const sentimentScore = (marketData && marketData.sentimentScore !== undefined) 
-            ? marketData.sentimentScore 
-            : 0.5;
+        // Hahanapin nito ang sentimentScore kahit nasaan man ito nakaposisyon
+        let sentimentScore = 0.5;
+        if (typeof data === 'object' && data !== null) {
+            if (data.sentimentScore !== undefined) {
+                sentimentScore = data.sentimentScore;
+            } else if (data.marketData && data.marketData.sentimentScore !== undefined) {
+                sentimentScore = data.marketData.sentimentScore;
+            }
+        }
         
         let signal = "NEUTRAL";
         let score = 0;
