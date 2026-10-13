@@ -4,15 +4,12 @@ class SentimentBrain {
         this.enabled = config.enabled !== undefined ? config.enabled : true;
     }
 
-    analyze(data) {
+    analyze(marketData) {
         if (!this.enabled) return { brain: this.name, signal: "NEUTRAL", score: 0 };
 
-        // Kunin ang sentimentScore kung nasaan man ito (sa data o sa data.marketData)
-        const sentimentScore = (data && data.sentimentScore !== undefined) 
-            ? data.sentimentScore 
-            : (data && data.marketData && data.marketData.sentimentScore !== undefined)
-                ? data.marketData.sentimentScore
-                : 0.5;
+        const sentimentScore = (marketData && marketData.sentimentScore !== undefined) 
+            ? marketData.sentimentScore 
+            : 0.5;
         
         let signal = "NEUTRAL";
         let score = 0;
