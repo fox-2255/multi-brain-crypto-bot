@@ -44,10 +44,10 @@ app.post('/api/analyze', (req, res) => {
         const accountBalance = req.body.accountBalance || 1000;
         const openPositions = req.body.openPositions || [];
 
-        // Run Brains
+        // Run Brains (ipinapasa ang buong req.body sa sentiment para sigurado)
         const techResult = technicalBrain.analyze(marketData);
         const riskResult = riskBrain.evaluateRisk(accountBalance, openPositions);
-        const sentimentResult = sentimentBrain.analyze(marketData);
+        const sentimentResult = sentimentBrain.analyze(req.body);
 
         res.json({
             success: true,
