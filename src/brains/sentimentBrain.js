@@ -7,7 +7,10 @@ class SentimentBrain {
     analyze(marketData) {
         if (!this.enabled) return { brain: this.name, signal: "NEUTRAL", score: 0 };
 
-        const sentimentScore = marketData.sentimentScore !== undefined ? marketData.sentimentScore : 0.5;
+        // Kunin ang sentimentScore mula sa marketData kung available
+        const sentimentScore = (marketData && marketData.sentimentScore !== undefined) 
+            ? marketData.sentimentScore 
+            : 0.5;
         
         let signal = "NEUTRAL";
         let score = 0;
