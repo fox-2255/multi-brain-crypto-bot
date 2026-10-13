@@ -47,7 +47,7 @@ app.post('/api/analyze', (req, res) => {
         // Run Brains
         const techResult = technicalBrain.analyze(marketData);
         const riskResult = riskBrain.evaluateRisk(accountBalance, openPositions);
-        const sentimentResult = sentimentBrain.analyze(marketData);
+        const sentimentResult = sentimentBrain.analyze(req.body); // Pasa ang buong req.body para masagap ang sentimentScore
 
         res.json({
             success: true,
