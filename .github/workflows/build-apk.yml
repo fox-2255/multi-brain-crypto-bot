@@ -1,0 +1,45 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: npm install
+
+      # Opsyonal: Kung may frontend build ka, ilagay dito (hal. npm run build)
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Cordova globally
+        run: npm install -g cordova
+
+      - name: Create Cordova Wrapper
+        run: |
+          cordova create temp-app com.cryptobot.multibrain MultiBrainBot
+          cd temp-app
+          cordova platform add android
+          # Ilagay ang iyong Node files sa www folder o i-configure ang WebView kung kinakailangan
+          
+      # Dito natin ilalagay ang sunod na configuration para i-bundle ang iyong Express server o UI papuntang Cordova/Capacitor APK.
