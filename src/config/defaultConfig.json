@@ -1,0 +1,16 @@
+{
+  "port": 3000,
+  "env": "development",
+  "exchanges": {
+    "binance": {
+      "enabled": false,
+      "sandbox": true
+    }
+  },
+  "brains": {
+    "technical": { "enabled": true },
+    "risk": { "enabled": true },
+    "sentiment": { "enabled": false },
+    "liquidity": { "enabled": false }
+  }
+}
