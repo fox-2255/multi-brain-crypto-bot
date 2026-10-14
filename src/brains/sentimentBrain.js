@@ -1,40 +1,38 @@
-class SentimentBrain {
-    constructor(config = {}) {
-        this.name = "SentimentBrain";
-        this.enabled = config.enabled !== undefined ? config.enabled : true;
-    }
+const FNG_URL = 'https://api.alternative.me/fng/?limit=1';
+const CACHE_MS = 10 * 60 * 1000;
+const TIMEOUT_MS = 5000;
 
-    analyze(data) {
-        if (!this.enabled) return { brain: this.name, signal: "NEUTRAL", score: 0 };
+let cache = null;
 
-        // Hahanapin nito ang sentimentScore kahit nasaan man ito nakaposisyon
-        let sentimentScore = 0.5;
-        if (typeof data === 'object' && data !== null) {
-            if (data.sentimentScore !== undefined) {
-                sentimentScore = data.sentimentScore;
-            } else if (data.marketData && data.marketData.sentimentScore !== undefined) {
-                sentimentScore = data.marketData.sentimentScore;
-            }
-        }
-        
-        let signal = "NEUTRAL";
-        let score = 0;
+async function analyzeSentiment() {
+    if (cache && Date.now() - cache.at < CACHE_MS) return cache.value;
 
-        if (sentimentScore > 0.6) {
-            signal = "BULLISH";
-            score = 0.6;
-        } else if (sentimentScore < 0.4) {
-            signal = "BEARISH";
-            score = -0.6;
+    try {
+        const res = await fetch(FNG_URL, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const json = await res.json();
+        const score = Number(json?.data?.[0]?.value);
+        if (!Number.isFinite(score) || score < 0 || score > 100) {
+            throw new Error('Malformed response');
         }
 
-        return {
-            brain: this.name,
-            signal,
+        const value = {
+            available: true,
             score,
-            details: { sentimentScore }
+            status: score > 50 ? 'GREED' : 'FEAR',
+            reasoning: `Fear & Greed Index: ${score}.`
+        };
+        cache = { at: Date.now(), value };
+        return value;
+    } catch (err) {
+        return {
+            available: false,
+            score: null,
+            status: 'UNKNOWN',
+            reasoning: `Sentiment unavailable: ${err.message}`
         };
     }
 }
 
-module.exports = SentimentBrain;
+module.exports = { analyzeSentiment };
