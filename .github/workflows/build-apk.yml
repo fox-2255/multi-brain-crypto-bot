@@ -52,6 +52,21 @@ jobs:
           cd myapp
           cordova platform add android@13.0.0
 
+      - name: Allow cleartext to local server
+        run: |
+          python3 - <<'PY'
+          p = 'myapp/config.xml'
+          s = open(p).read()
+          tag = '<platform name="android">'
+          if tag not in s:
+              raise SystemExit('config.xml has no android platform block')
+          snippet = '''
+                  <edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
+                      <application android:usesCleartextTraffic="true" />
+                  </edit-config>'''
+          open(p, 'w').write(s.replace(tag, tag + snippet, 1))
+          PY
+
       - name: Copy Custom Frontend UI
         run: |
           rm -rf myapp/www/*
