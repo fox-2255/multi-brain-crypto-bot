@@ -57,14 +57,20 @@ jobs:
           python3 - <<'PY'
           p = 'myapp/config.xml'
           s = open(p).read()
+          if 'xmlns:android' not in s:
+              s = s.replace('<widget ', '<widget xmlns:android="http://schemas.android.com/apk/res/android" ', 1)
+          edit = '''<edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
+                  <application android:usesCleartextTraffic="true" />
+              </edit-config>'''
           tag = '<platform name="android">'
-          if tag not in s:
-              raise SystemExit('config.xml has no android platform block')
-          snippet = '''
-                  <edit-config file="app/src/main/AndroidManifest.xml" mode="merge" target="/manifest/application">
-                      <application android:usesCleartextTraffic="true" />
-                  </edit-config>'''
-          open(p, 'w').write(s.replace(tag, tag + snippet, 1))
+          if tag in s:
+              s = s.replace(tag, tag + '\n        ' + edit, 1)
+          else:
+              s = s.replace('</widget>', '    ' + tag + '\n        ' + edit + '\n    </platform>\n</widget>', 1)
+          if 'usesCleartextTraffic' not in s:
+              raise SystemExit('Could not patch config.xml')
+          open(p, 'w').write(s)
+          print(s)
           PY
 
       - name: Copy Custom Frontend UI
