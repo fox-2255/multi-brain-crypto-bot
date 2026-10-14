@@ -1,28 +1,16 @@
-// src/liquidityBrain.js
-class LiquidityBrain {
-    async analyze(marketData) {
-        // Susuriin ang order book depth at liquidity spread
-        const orderBook = marketData.orderBook || { bids: 100, asks: 90 };
-        const ratio = orderBook.bids / (orderBook.asks || 1);
-        
-        let status = "GOOD";
-        let score = 75;
+function evaluateLiquidity(orderBook) {
+    const bestBid = orderBook?.bids?.[0]?.[0];
+    const bestAsk = orderBook?.asks?.[0]?.[0];
 
-        if (ratio > 1.2) {
-            status = "HEALTHY";
-            score = 85;
-        } else if (ratio < 0.8) {
-            status = "THIN";
-            score = 40;
-        }
-
-        return {
-            brain: "LiquidityBrain",
-            status: status,
-            score: score,
-            details: `Bid/Ask ratio: ${ratio.toFixed(2)}, Order book is ${status.toLowerCase()}`
-        };
+    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk) || bestBid <= 0) {
+        return { status: 'POOR', reasoning: 'Order book data unavailable.' };
     }
+    const spread = bestAsk - bestBid;
+    const isHealthy = spread < bestBid * 0.001;
+    return {
+        status: isHealthy ? 'GOOD' : 'HIGH_SLIPPAGE',
+        reasoning: isHealthy ? 'Order book liquidity is healthy.' : 'Warning: High spread detected.'
+    };
 }
 
-module.exports = LiquidityBrain;
+module.exports = { evaluateLiquidity };
