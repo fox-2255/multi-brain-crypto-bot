@@ -214,9 +214,6 @@
         const POLL_MS = 30000;
         const REQUEST_TIMEOUT_MS = 15000;
         const STORE_KEY = 'mbcb.settings.v1';
-        const JOURNAL_KEY = 'mbcb.journal.v1';
-        const JOURNAL_MAX = 50;
-        const JOURNAL_GAP_MS = 15 * 60 * 1000;
         const LOG_MAX = 80;
         const COLORS = { green: '#10b981', blue: '#3b82f6', amber: '#f59e0b', purple: '#8b5cf6', red: '#ef4444', grey: '#8c9bae' };
         const SYMBOL_RE = /^[A-Z0-9]{2,15}\/[A-Z0-9]{2,15}$/;
@@ -224,7 +221,9 @@
         const $ = (id) => document.getElementById(id);
         let pollTimer = null;
         let busy = false;
-        let journal = [];
+        let trades = [];
+        let tradeStats = null;
+        let journalError = null;
         const logLines = [];
 
         // ====== STORAGE (best-effort) ======
@@ -246,7 +245,7 @@
 
             const titles = { 'settings': 'SETTINGS', 'dashboard': 'DASHBOARD', 'journal': 'JOURNAL' };
             document.getElementById('header-title').innerText = titles[tabName];
-            if (tabName === 'journal') renderJournal();
+            if (tabName === 'journal') fetchTrades();
         }
 
         // ====== SETTINGS ======
@@ -343,19 +342,25 @@
             if (c.plan) {
                 log('[PLAN]: entry ' + fmtPrice(c.plan.entry) + ', SL ' + fmtPrice(c.plan.stopLoss) + ', TP ' + fmtPrice(c.plan.takeProfit) + ', size ' + c.plan.positionSizeUSDT + ' USDT (simulated)');
             }
+            if (data.paper && data.paper.opened) {
+                const o = data.paper.opened;
+                log('[PAPER]: Opened ' + o.symbol + ' @ ' + fmtPrice(o.entry) + ' (' + o.sizeUSDT + ' USDT)');
+            }
+            if (data.paper && data.paper.closed) {
+                data.paper.closed.forEach((t) => log('[PAPER]: Closed ' + t.symbol + ' ' + t.result + ' via ' + t.exitReason + ' ' + fmtUsd(t.pnlUSDT)));
+            }
+            const rf = b.reflection;
+            if (rf) {
+                log('[REFLECTION]: ' + rf.status + ' (' + rf.sample + ' trades' + (rf.winRate !== null ? ', WR ' + rf.winRate + '%, expectancy ' + rf.expectancyPct + '%' : '') + '). ' + rf.recommendation);
+            }
         }
 
         // ====== API ======
-        async function callApi(settings) {
+        async function request(path, init) {
             const ctrl = new AbortController();
             const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
             try {
-                const res = await fetch(API_BASE + '/api/run-analysis', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(settings),
-                    signal: ctrl.signal
-                });
+                const res = await fetch(API_BASE + path, Object.assign({ signal: ctrl.signal }, init));
                 let data = null;
                 try { data = await res.json(); } catch (e) { /* non-JSON */ }
                 if (!res.ok || !data || !data.success) {
@@ -371,6 +376,14 @@
             }
         }
 
+        function callApi(settings) {
+            return request('/api/run-analysis', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(settings)
+            });
+        }
+
         async function runAnalysis() {
             if (busy) return null;
             busy = true;
@@ -378,7 +391,7 @@
                 const settings = readSettings();
                 const data = await callApi(settings);
                 render(data);
-                addJournal(data);
+                fetchTrades();
                 return data;
             } catch (err) {
                 setBadge('STATUS: ERROR', COLORS.red);
@@ -401,20 +414,16 @@
             }, POLL_MS);
         }
 
-        // ====== JOURNAL ======
-        function addJournal(data) {
-            if (data.coordinator.finalDecision !== 'BUY') return;
-            const last = journal.find((e) => e.symbol === data.symbol);
-            if (last && Date.now() - last.ts < JOURNAL_GAP_MS) return;
-            journal.unshift({
-                ts: Date.now(),
-                symbol: data.symbol,
-                exchange: data.exchange,
-                score: data.coordinator.overallConfidence,
-                plan: data.coordinator.plan
-            });
-            journal = journal.slice(0, JOURNAL_MAX);
-            saveJSON(JOURNAL_KEY, journal);
+        // ====== JOURNAL (paper trades from server) ======
+        async function fetchTrades() {
+            try {
+                const data = await request('/api/trades');
+                trades = Array.isArray(data.trades) ? data.trades : [];
+                tradeStats = data.stats || null;
+                journalError = null;
+            } catch (err) {
+                journalError = 'Cannot load trades: ' + err.message;
+            }
             renderJournal();
         }
 
@@ -425,30 +434,55 @@
             return n;
         }
 
+        function fmtUsd(n) {
+            return (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
+        }
+
         function renderJournal() {
             const list = $('journal-list');
             const q = $('journal-search').value.trim().toLowerCase();
             list.textContent = '';
 
-            const items = journal.filter((e) => !q || (e.symbol + ' ' + e.exchange + ' buy signal').toLowerCase().includes(q));
-            if (!items.length) {
-                const empty = el('div', journal.length ? 'No matches.' : 'No signals yet. BUY signals appear here.');
-                empty.className = 'empty';
-                list.appendChild(empty);
+            if (journalError) {
+                const e = el('div', journalError);
+                e.className = 'empty';
+                list.appendChild(e);
                 return;
             }
 
-            items.forEach((e) => {
+            if (tradeStats) {
+                list.appendChild(el('div',
+                    'Closed ' + tradeStats.closed + ' | Win ' + tradeStats.wins + ' | Loss ' + tradeStats.losses +
+                    ' | Open ' + tradeStats.open + ' | PnL ' + fmtUsd(tradeStats.totalPnlUSDT),
+                    'font-size: 12px; color: #8c9bae; margin-bottom: 10px;'));
+            }
+
+            const items = trades.filter((t) => {
+                const label = t.status === 'OPEN' ? 'OPEN' : t.result;
+                return !q || [t.symbol, t.exchange, label, t.exitReason || ''].join(' ').toLowerCase().includes(q);
+            });
+            if (!items.length) {
+                const e = el('div', trades.length ? 'No matches.' : 'No paper trades yet. BUY signals open here.');
+                e.className = 'empty';
+                list.appendChild(e);
+                return;
+            }
+
+            items.forEach((t) => {
+                const isOpen = t.status === 'OPEN';
                 const card = document.createElement('div');
-                card.className = 'journal-card pending';
-                card.appendChild(el('div', e.symbol, 'font-weight: bold; font-size: 14px; margin-bottom: 3px;'));
-                card.appendChild(el('div', 'BUY SIGNAL (PAPER)', 'color: #3b82f6; font-weight: bold; font-size: 16px; margin-bottom: 3px;'));
-                card.appendChild(el('div', 'Score: ' + e.score + '%', 'font-size: 12px; margin-bottom: 3px;'));
-                if (e.plan) {
-                    card.appendChild(el('div', 'Entry ' + fmtPrice(e.plan.entry) + ' | SL ' + fmtPrice(e.plan.stopLoss) + ' | TP ' + fmtPrice(e.plan.takeProfit), 'font-size: 12px; margin-bottom: 3px;'));
-                    card.appendChild(el('div', 'Size: ' + e.plan.positionSizeUSDT + ' USDT (simulated)', 'font-size: 12px; margin-bottom: 3px;'));
+                card.className = 'journal-card ' + (isOpen ? 'pending' : (t.result === 'WIN' ? 'win' : 'loss'));
+                const color = isOpen ? COLORS.blue : (t.result === 'WIN' ? COLORS.green : COLORS.red);
+                card.appendChild(el('div', t.symbol, 'font-weight: bold; font-size: 14px; margin-bottom: 3px;'));
+                card.appendChild(el('div', isOpen ? 'OPEN (PAPER)' : t.result, 'color: ' + color + '; font-weight: bold; font-size: 16px; margin-bottom: 3px;'));
+                if (isOpen) {
+                    card.appendChild(el('div', 'Entry ' + fmtPrice(t.entry) + ' | SL ' + fmtPrice(t.stopLoss) + ' | TP ' + fmtPrice(t.takeProfit), 'font-size: 12px; margin-bottom: 3px;'));
+                    card.appendChild(el('div', 'Size: ' + t.sizeUSDT + ' USDT (simulated) | Score: ' + t.score + '%', 'font-size: 12px; margin-bottom: 3px;'));
+                } else {
+                    card.appendChild(el('div', 'PnL: ' + fmtUsd(t.pnlUSDT) + ' (' + (t.pnlPct >= 0 ? '+' : '') + t.pnlPct.toFixed(2) + '%)', 'font-size: 12px; margin-bottom: 3px;'));
+                    card.appendChild(el('div', 'Entry ' + fmtPrice(t.entry) + ' -> Exit ' + fmtPrice(t.exit) + ' (' + t.exitReason + ')', 'font-size: 12px; margin-bottom: 3px;'));
                 }
-                card.appendChild(el('div', new Date(e.ts).toLocaleString() + ' | ' + e.exchange.toUpperCase(), 'font-size: 11px; color: #8c9bae;'));
+                card.appendChild(el('div', new Date(t.openedAt).toLocaleString() + ' | ' + t.exchange.toUpperCase(), 'font-size: 11px; color: #8c9bae;'));
                 list.appendChild(card);
             });
         }
@@ -490,8 +524,6 @@
 
         // ====== INIT ======
         applySettings(loadJSON(STORE_KEY, null));
-        journal = loadJSON(JOURNAL_KEY, []);
-        if (!Array.isArray(journal)) journal = [];
         renderJournal();
         log('[SYSTEM]: Ready. Press SAVE & CONNECT.');
     </script>
