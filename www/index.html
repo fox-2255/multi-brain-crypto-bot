@@ -70,6 +70,20 @@
         .journal-card.pending { background: rgba(59, 130, 246, 0.1); border-color: #3b82f6; }
         .empty { text-align: center; color: #64748b; font-size: 13px; padding: 30px 10px; }
 
+        /* Watchlist (card grid) */
+        .wl-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 6px; }
+        .wl-card { background: #1a2233; border: 1px solid #2a364f; border-radius: 12px; padding: 10px; cursor: pointer; }
+        .wl-card.buy { border-color: #10b981; }
+        .wl-card.sel { box-shadow: 0 0 0 2px #3b82f6; }
+        .wl-head { display: flex; justify-content: space-between; align-items: center; }
+        .wl-pair { font-size: 14px; font-weight: bold; }
+        .wl-badge { font-size: 11px; font-weight: bold; padding: 2px 8px; border-radius: 6px; border: 1px solid #3a4763; color: #8c9bae; }
+        .wl-badge.buy { background: rgba(16, 185, 129, 0.15); border-color: #10b981; color: #10b981; }
+        .wl-badge.open { border-color: #3b82f6; color: #3b82f6; }
+        .wl-badge.err { border-color: #ef4444; color: #ef4444; }
+        .wl-score { font-size: 22px; font-weight: bold; margin: 4px 0; }
+        .wl-reason { font-size: 11px; color: #8c9bae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
         /* Bottom Nav */
         .nav-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #1a2233; display: flex; justify-content: space-around; padding: 10px 0; border-top: 1px solid #2a364f; z-index: 1000; }
         .nav-item { text-align: center; color: #64748b; font-size: 11px; cursor: pointer; background: none; border: none; }
@@ -93,9 +107,9 @@
                 </select>
             </div>
 
-            <div class="section-title">Pair</div>
+            <div class="section-title">Pairs (max 8, comma-separated)</div>
             <div class="form-group">
-                <input type="text" class="form-control" id="pair" value="SOL/USDT" autocapitalize="characters" autocomplete="off">
+                <input type="text" class="form-control" id="pair" value="SOL/USDT, ETH/USDT, BTC/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, AVAX/USDT, LINK/USDT" autocapitalize="characters" autocomplete="off">
             </div>
 
             <div class="section-title">API Credentials</div>
@@ -145,6 +159,11 @@
         <div class="status-badge" id="status-badge">STATUS: NOT CONNECTED</div>
 
         <button class="btn btn-danger" id="btn-kill">🚨 EMERGENCY KILL SWITCH</button>
+
+        <div class="section-title" style="margin-top:0;">Watchlist</div>
+        <div class="wl-grid" id="watchlist"></div>
+
+        <div class="section-title" id="detail-title">Details</div>
 
         <div class="grid-2">
             <div class="brain-card tech">
@@ -209,12 +228,13 @@
 
     <script>
         // ====== CONFIG ======
-        // Termux server: PORT=3001 node src/server.js
+        // Termux server (default port 3001): node src/server.js
         const API_BASE = 'http://127.0.0.1:3001';
         const POLL_MS = 30000;
-        const REQUEST_TIMEOUT_MS = 15000;
+        const REQUEST_TIMEOUT_MS = 40000;
         const STORE_KEY = 'mbcb.settings.v1';
         const LOG_MAX = 80;
+        const MAX_SYMBOLS = 8;
         const COLORS = { green: '#10b981', blue: '#3b82f6', amber: '#f59e0b', purple: '#8b5cf6', red: '#ef4444', grey: '#8c9bae' };
         const SYMBOL_RE = /^[A-Z0-9]{2,15}\/[A-Z0-9]{2,15}$/;
 
@@ -224,6 +244,10 @@
         let trades = [];
         let tradeStats = null;
         let journalError = null;
+        let lastScan = null;
+        let selectedSymbol = null;
+        let lastReflectionKey = null;
+        let lastErrorKey = '';
         const logLines = [];
 
         // ====== STORAGE (best-effort) ======
@@ -249,10 +273,15 @@
         }
 
         // ====== SETTINGS ======
+        function parseSymbols(text) {
+            const list = String(text || '').split(/[\s,]+/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+            return [...new Set(list)];
+        }
+
         function readSettings() {
             return {
                 exchangeName: $('exchange').value,
-                symbol: $('pair').value.trim().toUpperCase(),
+                symbols: parseSymbols($('pair').value),
                 paperTrading: $('paper').checked,
                 riskParams: {
                     max_risk_per_trade_percent: parseFloat($('risk-max').value),
@@ -265,7 +294,8 @@
         function applySettings(s) {
             if (!s) return;
             $('exchange').value = s.exchangeName || 'binance';
-            $('pair').value = s.symbol || 'SOL/USDT';
+            const list = Array.isArray(s.symbols) && s.symbols.length ? s.symbols : (s.symbol ? [s.symbol] : null);
+            if (list) $('pair').value = list.join(', ');
             $('paper').checked = s.paperTrading !== false;
             const r = s.riskParams || {};
             if (Number.isFinite(r.max_risk_per_trade_percent)) $('risk-max').value = r.max_risk_per_trade_percent;
@@ -274,7 +304,10 @@
         }
 
         function validateSettings(s) {
-            if (!SYMBOL_RE.test(s.symbol)) return 'Invalid pair (e.g. SOL/USDT).';
+            if (s.symbols.length < 1) return 'Add at least one pair.';
+            if (s.symbols.length > MAX_SYMBOLS) return 'Max ' + MAX_SYMBOLS + ' pairs.';
+            const bad = s.symbols.find((x) => !SYMBOL_RE.test(x));
+            if (bad) return 'Invalid pair: ' + bad + ' (e.g. SOL/USDT).';
             const r = s.riskParams;
             if (![r.max_risk_per_trade_percent, r.stop_loss_percent, r.take_profit_percent].every(Number.isFinite)) return 'Risk parameters must be numbers.';
             if (r.max_risk_per_trade_percent <= 0 || r.max_risk_per_trade_percent > 5) return 'Max risk must be > 0 and <= 5%.';
@@ -318,40 +351,127 @@
             return Number.isFinite(n) ? (n >= 1 ? n.toFixed(2) : n.toFixed(6)) : '-';
         }
 
-        function render(data) {
-            const c = data.coordinator;
-            const b = data.brains;
+        function fmtUsd(n) {
+            return (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
+        }
+
+        function el(tag, text, style) {
+            const n = document.createElement(tag);
+            n.textContent = text;
+            if (style) n.style.cssText = style;
+            return n;
+        }
+
+        function shortReason(r) {
+            if (r.error) return r.error;
+            const d = r.coordinator.finalDecision;
+            const t = r.brains.technical;
+            if (d === 'BUY') return t.reasoning.replace(/^Uptrend: /, '');
+            if (r.coordinator.blockedBy.includes('position_open')) return 'Position open';
+            if (r.coordinator.blockedBy.includes('max_positions')) return 'Max open positions';
+            if (t.action === 'BUY') return 'Blocked: ' + r.coordinator.blockedBy.join(', ');
+            return t.reasoning.replace(/^HOLD: /, '').split(';')[0].replace(/\.$/, '');
+        }
+
+        function badgeFor(r) {
+            if (r.error) return { text: 'ERROR', cls: 'err' };
+            if (r.coordinator.finalDecision === 'BUY') return { text: 'BUY', cls: 'buy' };
+            if (r.coordinator.blockedBy.includes('position_open')) return { text: 'OPEN', cls: 'open' };
+            if (r.brains.technical.action === 'BUY') return { text: 'BLOCKED', cls: '' };
+            return { text: 'HOLD', cls: '' };
+        }
+
+        function renderWatchlist() {
+            const box = $('watchlist');
+            box.textContent = '';
+            if (!lastScan) {
+                const e = el('div', 'No scan yet. Press SAVE & CONNECT.');
+                e.className = 'empty';
+                e.style.gridColumn = '1 / -1';
+                box.appendChild(e);
+                return;
+            }
+            lastScan.results.forEach((r) => {
+                const b = badgeFor(r);
+                const card = document.createElement('div');
+                card.className = 'wl-card' + (b.cls === 'buy' ? ' buy' : '') + (r.symbol === selectedSymbol ? ' sel' : '');
+                const head = document.createElement('div');
+                head.className = 'wl-head';
+                const pairEl = el('span', r.symbol.split('/')[0]);
+                pairEl.className = 'wl-pair';
+                head.appendChild(pairEl);
+                const badge = el('span', b.text);
+                badge.className = 'wl-badge' + (b.cls ? ' ' + b.cls : '');
+                head.appendChild(badge);
+                card.appendChild(head);
+                const score = el('div', r.error ? '-' : r.coordinator.overallConfidence + '%');
+                score.className = 'wl-score';
+                card.appendChild(score);
+                const reason = el('div', shortReason(r));
+                reason.className = 'wl-reason';
+                card.appendChild(reason);
+                card.addEventListener('click', () => {
+                    selectedSymbol = r.symbol;
+                    renderWatchlist();
+                    renderDetail();
+                });
+                box.appendChild(card);
+            });
+        }
+
+        function renderDetail() {
+            const r = lastScan && lastScan.results.find((x) => x.symbol === selectedSymbol);
+            if (!r) return;
+            $('detail-title').textContent = 'Details: ' + r.symbol;
+            const g = $('gauge-val');
+            if (r.error) {
+                setCard('tech', '-', COLORS.grey, r.error);
+                setCard('risk', '-', COLORS.grey, '-');
+                setCard('sent', '-', COLORS.grey, '-');
+                setCard('liq', '-', COLORS.grey, '-');
+                g.textContent = 'NO DATA';
+                g.style.color = COLORS.red;
+                return;
+            }
+            const c = r.coordinator;
+            const b = r.brains;
             const t = b.technical;
             const s = b.sentiment;
-
-            setBadge('STATUS: ACTIVE (' + data.exchange.toUpperCase() + ', ' + data.symbol + ', ' + (data.paperTrading ? 'PAPER' : 'LIVE') + ')', COLORS.green);
             setCard('tech', (t.action || 'HOLD') + ' (' + t.score + '%)', t.action === 'BUY' ? COLORS.green : COLORS.amber, t.reasoning);
             setCard('risk', b.risk.approved ? 'APPROVED' : 'REJECTED', b.risk.approved ? COLORS.blue : COLORS.red, b.risk.reasoning);
             setCard('sent', s.available ? s.status + ' (' + s.score + ')' : 'UNAVAILABLE', s.available ? COLORS.amber : COLORS.red, s.reasoning);
             setCard('liq', b.liquidity.status, b.liquidity.status === 'GOOD' ? COLORS.purple : COLORS.red, b.liquidity.reasoning);
-
-            const g = $('gauge-val');
             g.textContent = c.overallConfidence + '% ' + c.finalDecision;
             g.style.color = c.finalDecision === 'BUY' ? COLORS.green : COLORS.amber;
+        }
 
-            log('[TECH]: ' + t.reasoning);
-            log('[RISK]: ' + b.risk.reasoning);
-            log('[SENTIMENT]: ' + s.reasoning);
-            log('[LIQUIDITY]: ' + b.liquidity.reasoning);
-            log('[COORDINATOR]: ' + c.finalDecision + ' ' + c.overallConfidence + '%' + (c.blockedBy && c.blockedBy.length ? ' | blocked: ' + c.blockedBy.join(', ') : ''));
-            if (c.plan) {
-                log('[PLAN]: entry ' + fmtPrice(c.plan.entry) + ', SL ' + fmtPrice(c.plan.stopLoss) + ', TP ' + fmtPrice(c.plan.takeProfit) + ', size ' + c.plan.positionSizeUSDT + ' USDT (simulated)');
+        function handleScan(data) {
+            lastScan = data;
+            if (!data.results.some((r) => r.symbol === selectedSymbol)) {
+                const first = data.results.find((r) => !r.error) || data.results[0];
+                selectedSymbol = first ? first.symbol : null;
             }
-            if (data.paper && data.paper.opened) {
-                const o = data.paper.opened;
-                log('[PAPER]: Opened ' + o.symbol + ' @ ' + fmtPrice(o.entry) + ' (' + o.sizeUSDT + ' USDT)');
+            renderWatchlist();
+            renderDetail();
+            setBadge('STATUS: ACTIVE (' + data.exchange.toUpperCase() + ', ' + data.results.length + ' PAIRS, PAPER)', COLORS.green);
+
+            const ok = data.results.filter((r) => !r.error);
+            log('[SCAN]: ' + ok.slice(0, 3).map((r) => r.symbol.split('/')[0] + ' ' + r.coordinator.overallConfidence + '%').join(', ') + ' (top of ' + data.results.length + ')');
+            const errs = data.results.filter((r) => r.error);
+            const errKey = errs.map((r) => r.symbol + ':' + r.error).join('|');
+            if (errKey !== lastErrorKey) {
+                lastErrorKey = errKey;
+                errs.forEach((r) => log('[ERROR]: ' + r.symbol + ': ' + r.error));
             }
-            if (data.paper && data.paper.closed) {
-                data.paper.closed.forEach((t) => log('[PAPER]: Closed ' + t.symbol + ' ' + t.result + ' via ' + t.exitReason + ' ' + fmtUsd(t.pnlUSDT)));
-            }
-            const rf = b.reflection;
+            (data.paper.opened || []).forEach((t) => log('[PAPER]: Opened ' + t.symbol + ' @ ' + fmtPrice(t.entry) + ' (' + t.sizeUSDT + ' USDT)'));
+            (data.paper.closed || []).forEach((t) => log('[PAPER]: Closed ' + t.symbol + ' ' + t.result + ' via ' + t.exitReason + ' ' + fmtUsd(t.pnlUSDT)));
+            const rf = data.reflection;
             if (rf) {
-                log('[REFLECTION]: ' + rf.status + ' (' + rf.sample + ' trades' + (rf.winRate !== null ? ', WR ' + rf.winRate + '%, expectancy ' + rf.expectancyPct + '%' : '') + '). ' + rf.recommendation);
+                const key = rf.status + ':' + rf.sample;
+                if (key !== lastReflectionKey) {
+                    lastReflectionKey = key;
+                    log('[REFLECTION]: ' + rf.status + ' (' + rf.sample + ' trades). ' + rf.recommendation);
+                }
             }
         }
 
@@ -377,20 +497,19 @@
         }
 
         function callApi(settings) {
-            return request('/api/run-analysis', {
+            return request('/api/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
             });
         }
 
-        async function runAnalysis() {
+        async function runScan() {
             if (busy) return null;
             busy = true;
             try {
-                const settings = readSettings();
-                const data = await callApi(settings);
-                render(data);
+                const data = await callApi(readSettings());
+                handleScan(data);
                 fetchTrades();
                 return data;
             } catch (err) {
@@ -408,9 +527,9 @@
 
         function startPolling() {
             stopPolling();
-            runAnalysis().catch(() => {});
+            runScan().catch(() => {});
             pollTimer = setInterval(() => {
-                if (document.visibilityState === 'visible') runAnalysis().catch(() => {});
+                if (document.visibilityState === 'visible') runScan().catch(() => {});
             }, POLL_MS);
         }
 
@@ -425,17 +544,6 @@
                 journalError = 'Cannot load trades: ' + err.message;
             }
             renderJournal();
-        }
-
-        function el(tag, text, style) {
-            const n = document.createElement(tag);
-            n.textContent = text;
-            if (style) n.style.cssText = style;
-            return n;
-        }
-
-        function fmtUsd(n) {
-            return (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
         }
 
         function renderJournal() {
@@ -494,7 +602,7 @@
             if (err) { setTestResult('✖ ' + err, COLORS.red); return; }
             saveJSON(STORE_KEY, s);
             setTestResult('Saved. Connecting...', COLORS.grey);
-            log('[SYSTEM]: Settings saved. Polling every ' + (POLL_MS / 1000) + 's.');
+            log('[SYSTEM]: Settings saved. Scanning ' + s.symbols.length + ' pairs every ' + (POLL_MS / 1000) + 's.');
             startPolling();
             switchTab('dashboard', document.querySelectorAll('.nav-item')[1]);
         });
@@ -505,25 +613,28 @@
             if (err) { setTestResult('✖ ' + err, COLORS.red); return; }
             setTestResult('Testing...', COLORS.grey);
             try {
-                const data = await runAnalysis();
-                if (data) setTestResult('✔ OK: ' + data.coordinator.finalDecision + ' ' + data.coordinator.overallConfidence + '%', COLORS.green);
-                else setTestResult('Busy, try again.', COLORS.grey);
+                const data = await runScan();
+                if (!data) { setTestResult('Busy, try again.', COLORS.grey); return; }
+                const buys = data.results.filter((r) => !r.error && r.coordinator.finalDecision === 'BUY').length;
+                const bad = data.results.filter((r) => r.error).length;
+                setTestResult('✔ OK: scanned ' + data.results.length + ' pairs, ' + buys + ' BUY' + (bad ? ', ' + bad + ' error' : ''), COLORS.green);
             } catch (e) {
                 setTestResult('✖ ' + e.message, COLORS.red);
             }
         });
 
         $('btn-kill').addEventListener('click', () => {
-            if (!confirm('Stop all analysis? You can restart with SAVE & CONNECT.')) return;
+            if (!confirm('Stop scanning? Open paper trades are not tracked while stopped.')) return;
             stopPolling();
             setBadge('STATUS: STOPPED (KILL SWITCH)', COLORS.red);
-            log('[SYSTEM]: Kill switch activated. Polling stopped.');
+            log('[SYSTEM]: Kill switch activated. Scanning stopped.');
         });
 
         $('journal-search').addEventListener('input', renderJournal);
 
         // ====== INIT ======
         applySettings(loadJSON(STORE_KEY, null));
+        renderWatchlist();
         renderJournal();
         log('[SYSTEM]: Ready. Press SAVE & CONNECT.');
     </script>
