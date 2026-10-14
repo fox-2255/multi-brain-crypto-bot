@@ -51,6 +51,11 @@ jobs:
           cd myapp
           cordova platform add android
 
+      - name: Copy Custom Frontend UI
+        run: |
+          rm -rf myapp/www/*
+          cp -r www/* myapp/www/
+
       - name: Build Debug APK
         run: |
           cd myapp
