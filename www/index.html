@@ -84,6 +84,22 @@
         .wl-score { font-size: 22px; font-weight: bold; margin: 4px 0; }
         .wl-reason { font-size: 11px; color: #8c9bae; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+        /* Large watchlist: summary, chips, compact rows */
+        .wl-sum { font-size: 12px; color: #8c9bae; margin-bottom: 8px; }
+        .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+        .chip { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid #3a4763; color: #8c9bae; cursor: pointer; }
+        .chip.on { background: rgba(59, 130, 246, 0.15); border-color: #3b82f6; color: #3b82f6; }
+        .wl-badge.dim { opacity: 0.7; }
+        .wl-row { display: flex; align-items: center; gap: 8px; padding: 8px 6px; border-top: 1px solid #2a364f; cursor: pointer; border-radius: 6px; }
+        .wl-row.sel { background: rgba(59, 130, 246, 0.12); }
+        .wl-row.dim .wl-rpair, .wl-row.dim .wl-rscore { opacity: 0.6; }
+        .wl-rpair { font-size: 13px; font-weight: bold; min-width: 58px; }
+        .wl-bar { height: 4px; border-radius: 2px; background: #2a364f; flex: 1; overflow: hidden; }
+        .wl-bar i { display: block; height: 100%; background: #4a5875; }
+        .wl-bar i.up { background: #10b981; }
+        .wl-rscore { font-size: 12px; font-weight: bold; min-width: 26px; text-align: right; }
+        .wl-age { font-size: 11px; color: #64748b; min-width: 30px; text-align: right; }
+
         /* Bottom Nav */
         .nav-bar { position: fixed; bottom: 0; left: 0; right: 0; background: #1a2233; display: flex; justify-content: space-around; padding: 10px 0; border-top: 1px solid #2a364f; z-index: 1000; }
         .nav-item { text-align: center; color: #64748b; font-size: 11px; cursor: pointer; background: none; border: none; }
@@ -114,10 +130,13 @@
                 </select>
             </div>
 
-            <div class="section-title">Pairs (max 10, comma-separated)</div>
+            <div class="section-title">Pairs (max 50, comma-separated)</div>
             <div class="form-group">
-                <input type="text" class="form-control" id="pair" value="SOL/USDT, ETH/USDT, BTC/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, AVAX/USDT, LINK/USDT" autocapitalize="characters" autocomplete="off">
+                <textarea class="form-control" id="pair" rows="3" autocapitalize="characters" autocomplete="off" spellcheck="false" style="resize:none;">SOL/USDT, ETH/USDT, BTC/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, AVAX/USDT, LINK/USDT</textarea>
             </div>
+
+            <button class="btn btn-secondary" id="btn-autofill" style="width:100%; margin: -4px 0 4px;">AUTO-FILL TOP 30 BY VOLUME</button>
+            <div class="hint">Replaces the list above with the most traded USDT pairs on the selected exchange. Thin pairs are skipped automatically.</div>
 
             <div class="section-title">API Credentials</div>
             <div class="form-group">
@@ -168,7 +187,11 @@
         <button class="btn btn-danger" id="btn-kill">🚨 EMERGENCY KILL SWITCH</button>
 
         <div class="section-title" style="margin-top:0;">Watchlist</div>
+        <div class="wl-sum" id="wl-sum">No scan yet.</div>
+        <div class="chips" id="wl-chips"></div>
         <div class="wl-grid" id="watchlist"></div>
+        <div class="section-title" id="list-title" style="display:none;">All pairs, best first</div>
+        <div id="wl-list"></div>
 
         <div class="section-title" id="detail-title">Details</div>
 
@@ -241,7 +264,7 @@
         const REQUEST_TIMEOUT_MS = 40000;
         const STORE_KEY = 'mbcb.settings.v1';
         const LOG_MAX = 80;
-        const MAX_SYMBOLS = 10;
+        const MAX_SYMBOLS = 50;
         const COLORS = { green: '#10b981', blue: '#3b82f6', amber: '#f59e0b', purple: '#8b5cf6', red: '#ef4444', grey: '#8c9bae' };
         const SYMBOL_RE = /^[A-Z0-9]{2,15}\/[A-Z0-9]{2,15}$/;
 
@@ -369,8 +392,22 @@
             return n;
         }
 
+        let wlFilter = 'all';
+
+        function hasResult(r) { return !!r.coordinator; }
+        function isCandidate(r) { return hasResult(r) && r.brains.technical.action === 'BUY'; }
+        function isOpenPair(r) { return hasResult(r) && r.coordinator.blockedBy.includes('position_open'); }
+        function isIssue(r) { return !!r.error || !!r.skipped; }
+
+        function fmtAge(s) {
+            if (!Number.isFinite(s)) return '-';
+            return s < 90 ? s + 's' : Math.round(s / 60) + 'm';
+        }
+
         function shortReason(r) {
             if (r.error) return r.error;
+            if (r.skipped) return '24h vol $' + (r.quoteVolume / 1e6).toFixed(1) + 'M';
+            if (r.pending) return 'Waiting for scan';
             const d = r.coordinator.finalDecision;
             const t = r.brains.technical;
             if (d === 'BUY') return t.reasoning.replace(/^Uptrend: /, '');
@@ -382,48 +419,119 @@
 
         function badgeFor(r) {
             if (r.error) return { text: 'ERROR', cls: 'err' };
+            if (r.skipped) return { text: 'LOW VOL', cls: 'dim' };
+            if (r.pending) return { text: 'PENDING', cls: 'dim' };
             if (r.coordinator.finalDecision === 'BUY') return { text: 'BUY', cls: 'buy' };
             if (r.coordinator.blockedBy.includes('position_open')) return { text: 'OPEN', cls: 'open' };
             if (r.brains.technical.action === 'BUY') return { text: 'BLOCKED', cls: '' };
             return { text: 'HOLD', cls: '' };
         }
 
+        function selectPair(symbol) {
+            selectedSymbol = symbol;
+            renderWatchlist();
+            renderDetail();
+        }
+
+        function makeCard(r) {
+            const b = badgeFor(r);
+            const card = document.createElement('div');
+            card.className = 'wl-card' + (b.cls === 'buy' ? ' buy' : '') + (r.symbol === selectedSymbol ? ' sel' : '');
+            const head = document.createElement('div');
+            head.className = 'wl-head';
+            const pairEl = el('span', r.symbol.split('/')[0]);
+            pairEl.className = 'wl-pair';
+            head.appendChild(pairEl);
+            const badge = el('span', b.text);
+            badge.className = 'wl-badge' + (b.cls ? ' ' + b.cls : '');
+            head.appendChild(badge);
+            card.appendChild(head);
+            const score = el('div', hasResult(r) ? r.coordinator.overallConfidence + '%' : '-');
+            score.className = 'wl-score';
+            card.appendChild(score);
+            const reason = el('div', shortReason(r));
+            reason.className = 'wl-reason';
+            card.appendChild(reason);
+            card.addEventListener('click', () => selectPair(r.symbol));
+            return card;
+        }
+
+        function makeRow(r) {
+            const b = badgeFor(r);
+            const row = document.createElement('div');
+            row.className = 'wl-row' + (r.symbol === selectedSymbol ? ' sel' : '') + (b.cls === 'dim' || b.cls === 'err' ? ' dim' : '');
+            const pair = el('span', r.symbol.split('/')[0]);
+            pair.className = 'wl-rpair';
+            row.appendChild(pair);
+            const bar = document.createElement('div');
+            bar.className = 'wl-bar';
+            const fill = document.createElement('i');
+            fill.style.width = (hasResult(r) ? Math.max(0, Math.min(100, r.coordinator.overallConfidence)) : 0) + '%';
+            if (b.cls === 'buy') fill.className = 'up';
+            bar.appendChild(fill);
+            row.appendChild(bar);
+            const sc = el('span', hasResult(r) ? String(r.coordinator.overallConfidence) : '-');
+            sc.className = 'wl-rscore';
+            row.appendChild(sc);
+            const age = el('span', fmtAge(r.ageSec));
+            age.className = 'wl-age';
+            row.appendChild(age);
+            const badge = el('span', b.text);
+            badge.className = 'wl-badge' + (b.cls ? ' ' + b.cls : '');
+            row.appendChild(badge);
+            row.addEventListener('click', () => selectPair(r.symbol));
+            return row;
+        }
+
         function renderWatchlist() {
             const box = $('watchlist');
+            const list = $('wl-list');
+            const chips = $('wl-chips');
+            const sum = $('wl-sum');
             box.textContent = '';
+            list.textContent = '';
+            chips.textContent = '';
             if (!lastScan) {
-                const e = el('div', 'No scan yet. Press SAVE & CONNECT.');
+                sum.textContent = 'No scan yet. Press SAVE & CONNECT.';
+                $('list-title').style.display = 'none';
+                return;
+            }
+            const all = lastScan.results;
+            const sc = lastScan.scan;
+            if (sc) {
+                const pass = sc.passCycles <= 1 ? 'every cycle' : 'about ' + (sc.passCycles * POLL_MS / 60000).toFixed(1) + ' min';
+                sum.textContent = sc.total + ' pairs | ' + sc.deep + ' scanned this cycle | full pass: ' + pass;
+            } else {
+                sum.textContent = all.length + ' pairs';
+            }
+
+            const counts = { all: all.length, cand: all.filter(isCandidate).length, open: all.filter(isOpenPair).length, issue: all.filter(isIssue).length };
+            [['all', 'All'], ['cand', 'Candidates'], ['open', 'Open'], ['issue', 'Skipped/errors']].forEach((c) => {
+                const chip = el('span', c[1] + ' ' + counts[c[0]]);
+                chip.className = 'chip' + (wlFilter === c[0] ? ' on' : '');
+                chip.addEventListener('click', () => { wlFilter = c[0]; renderWatchlist(); });
+                chips.appendChild(chip);
+            });
+
+            const filtered = all.filter((r) =>
+                wlFilter === 'all' ||
+                (wlFilter === 'cand' && isCandidate(r)) ||
+                (wlFilter === 'open' && isOpenPair(r)) ||
+                (wlFilter === 'issue' && isIssue(r)));
+            if (!filtered.length) {
+                const e = el('div', 'Nothing here.');
                 e.className = 'empty';
                 e.style.gridColumn = '1 / -1';
                 box.appendChild(e);
+                $('list-title').style.display = 'none';
                 return;
             }
-            lastScan.results.forEach((r) => {
-                const b = badgeFor(r);
-                const card = document.createElement('div');
-                card.className = 'wl-card' + (b.cls === 'buy' ? ' buy' : '') + (r.symbol === selectedSymbol ? ' sel' : '');
-                const head = document.createElement('div');
-                head.className = 'wl-head';
-                const pairEl = el('span', r.symbol.split('/')[0]);
-                pairEl.className = 'wl-pair';
-                head.appendChild(pairEl);
-                const badge = el('span', b.text);
-                badge.className = 'wl-badge' + (b.cls ? ' ' + b.cls : '');
-                head.appendChild(badge);
-                card.appendChild(head);
-                const score = el('div', r.error ? '-' : r.coordinator.overallConfidence + '%');
-                score.className = 'wl-score';
-                card.appendChild(score);
-                const reason = el('div', shortReason(r));
-                reason.className = 'wl-reason';
-                card.appendChild(reason);
-                card.addEventListener('click', () => {
-                    selectedSymbol = r.symbol;
-                    renderWatchlist();
-                    renderDetail();
-                });
-                box.appendChild(card);
-            });
+            const top = filtered.filter(hasResult).slice(0, 4);
+            const topSet = new Set(top.map((r) => r.symbol));
+            top.forEach((r) => box.appendChild(makeCard(r)));
+            const rest = filtered.filter((r) => !topSet.has(r.symbol));
+            $('list-title').style.display = rest.length ? '' : 'none';
+            rest.forEach((r) => list.appendChild(makeRow(r)));
         }
 
         function renderDetail() {
@@ -431,13 +539,14 @@
             if (!r) return;
             $('detail-title').textContent = 'Details: ' + r.symbol;
             const g = $('gauge-val');
-            if (r.error) {
-                setCard('tech', '-', COLORS.grey, r.error);
+            if (!hasResult(r)) {
+                const msg = r.error || (r.skipped ? '24h volume $' + (r.quoteVolume / 1e6).toFixed(1) + 'M is below the minimum.' : 'Waiting for its turn in the scan.');
+                setCard('tech', '-', COLORS.grey, msg);
                 setCard('risk', '-', COLORS.grey, '-');
                 setCard('sent', '-', COLORS.grey, '-');
                 setCard('liq', '-', COLORS.grey, '-');
-                g.textContent = 'NO DATA';
-                g.style.color = COLORS.red;
+                g.textContent = r.error ? 'NO DATA' : (r.skipped ? 'SKIPPED' : 'PENDING');
+                g.style.color = r.error ? COLORS.red : COLORS.grey;
                 return;
             }
             const c = r.coordinator;
@@ -455,20 +564,24 @@
         function handleScan(data) {
             lastScan = data;
             if (!data.results.some((r) => r.symbol === selectedSymbol)) {
-                const first = data.results.find((r) => !r.error) || data.results[0];
+                const first = data.results.find(hasResult) || data.results[0];
                 selectedSymbol = first ? first.symbol : null;
             }
             renderWatchlist();
             renderDetail();
-            setBadge('STATUS: ACTIVE (' + data.exchange.toUpperCase() + ', ' + data.results.length + ' PAIRS, PAPER)', COLORS.green);
+            const sc = data.scan;
+            setBadge('STATUS: ACTIVE (' + data.exchange.toUpperCase() + ', ' + (sc ? sc.total : data.results.length) + ' PAIRS, PAPER)', COLORS.green);
 
-            const ok = data.results.filter((r) => !r.error);
-            log('[SCAN]: ' + ok.slice(0, 3).map((r) => r.symbol.split('/')[0] + ' ' + r.coordinator.overallConfidence + '%').join(', ') + ' (top of ' + data.results.length + ')');
+            const ok = data.results.filter(hasResult);
+            log('[SCAN]: ' + ok.slice(0, 3).map((r) => r.symbol.split('/')[0] + ' ' + r.coordinator.overallConfidence + '%').join(', ') +
+                ' (' + (sc ? sc.scanned + '/' + sc.eligible : ok.length) + ' pairs scanned)');
             const errs = data.results.filter((r) => r.error);
-            const errKey = errs.map((r) => r.symbol + ':' + r.error).join('|');
-            if (errKey !== lastErrorKey) {
-                lastErrorKey = errKey;
+            const skips = data.results.filter((r) => r.skipped);
+            const issueKey = errs.map((r) => r.symbol + ':' + r.error).join('|') + '#' + skips.length;
+            if (issueKey !== lastErrorKey) {
+                lastErrorKey = issueKey;
                 errs.forEach((r) => log('[ERROR]: ' + r.symbol + ': ' + r.error));
+                if (skips.length) log('[SKIP]: ' + skips.length + ' pair(s) below the minimum 24h volume: ' + skips.slice(0, 5).map((r) => r.symbol.split('/')[0]).join(', ') + (skips.length > 5 ? '...' : ''));
             }
             (data.paper.opened || []).forEach((t) => log('[PAPER]: Opened ' + t.symbol + ' @ ' + fmtPrice(t.entry) + ' (' + t.sizeUSDT + ' USDT)'));
             (data.paper.closed || []).forEach((t) => log('[PAPER]: Closed ' + t.symbol + ' ' + t.result + ' via ' + t.exitReason + ' ' + fmtUsd(t.pnlUSDT)));
@@ -630,9 +743,10 @@
             try {
                 const data = await runScan();
                 if (!data) { setTestResult('Busy, try again.', COLORS.grey); return; }
-                const buys = data.results.filter((r) => !r.error && r.coordinator.finalDecision === 'BUY').length;
+                const buys = data.results.filter((r) => hasResult(r) && r.coordinator.finalDecision === 'BUY').length;
+                const sc = data.scan;
                 const bad = data.results.filter((r) => r.error).length;
-                setTestResult('✔ OK: scanned ' + data.results.length + ' pairs, ' + buys + ' BUY' + (bad ? ', ' + bad + ' error' : ''), COLORS.green);
+                setTestResult('✔ OK: ' + (sc ? sc.scanned + '/' + sc.eligible + ' pairs scanned' : data.results.length + ' pairs') + ', ' + buys + ' BUY' + (bad ? ', ' + bad + ' error' : ''), COLORS.green);
             } catch (e) {
                 setTestResult('✖ ' + e.message, COLORS.red);
             }
@@ -643,6 +757,17 @@
             stopPolling();
             setBadge('STATUS: STOPPED (KILL SWITCH)', COLORS.red);
             log('[SYSTEM]: Kill switch activated. Scanning stopped.');
+        });
+
+        $('btn-autofill').addEventListener('click', async () => {
+            setTestResult('Fetching top pairs...', COLORS.grey);
+            try {
+                const d = await request('/api/top-pairs?exchange=' + encodeURIComponent($('exchange').value) + '&n=30');
+                $('pair').value = d.symbols.join(', ');
+                setTestResult('✔ ' + d.symbols.length + ' pairs filled (24h volume at least $' + (d.minVolumeUSDT / 1e6) + 'M). Press SAVE & CONNECT.', COLORS.green);
+            } catch (e) {
+                setTestResult('✖ ' + e.message, COLORS.red);
+            }
         });
 
         $('journal-search').addEventListener('input', renderJournal);
