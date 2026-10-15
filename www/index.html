@@ -404,9 +404,19 @@
             return s < 90 ? s + 's' : Math.round(s / 60) + 'm';
         }
 
+        function skipText(r, short) {
+            if (r.skipped === 'low_range') {
+                const v = Number.isFinite(r.range24hPct) ? r.range24hPct.toFixed(1) + '%' : '?';
+                return short ? '24h range ' + v : '24h range ' + v + ' is too small to reach the take-profit.';
+            }
+            if (r.skipped === 'not_crypto') return short ? 'Stable/commodity' : 'Stablecoin or commodity-backed token. Not scanned.';
+            const v = Number.isFinite(r.quoteVolume) ? '$' + (r.quoteVolume / 1e6).toFixed(1) + 'M' : '?';
+            return short ? '24h vol ' + v : '24h volume ' + v + ' is below the minimum.';
+        }
+
         function shortReason(r) {
             if (r.error) return r.error;
-            if (r.skipped) return '24h vol $' + (r.quoteVolume / 1e6).toFixed(1) + 'M';
+            if (r.skipped) return skipText(r, true);
             if (r.pending) return 'Waiting for scan';
             const d = r.coordinator.finalDecision;
             const t = r.brains.technical;
@@ -419,7 +429,7 @@
 
         function badgeFor(r) {
             if (r.error) return { text: 'ERROR', cls: 'err' };
-            if (r.skipped) return { text: 'LOW VOL', cls: 'dim' };
+            if (r.skipped) return { text: r.skipped === 'low_range' ? 'FLAT' : (r.skipped === 'not_crypto' ? 'SKIP' : 'LOW VOL'), cls: 'dim' };
             if (r.pending) return { text: 'PENDING', cls: 'dim' };
             if (r.coordinator.finalDecision === 'BUY') return { text: 'BUY', cls: 'buy' };
             if (r.coordinator.blockedBy.includes('position_open')) return { text: 'OPEN', cls: 'open' };
@@ -540,7 +550,7 @@
             $('detail-title').textContent = 'Details: ' + r.symbol;
             const g = $('gauge-val');
             if (!hasResult(r)) {
-                const msg = r.error || (r.skipped ? '24h volume $' + (r.quoteVolume / 1e6).toFixed(1) + 'M is below the minimum.' : 'Waiting for its turn in the scan.');
+                const msg = r.error || (r.skipped ? skipText(r, false) : 'Waiting for its turn in the scan.');
                 setCard('tech', '-', COLORS.grey, msg);
                 setCard('risk', '-', COLORS.grey, '-');
                 setCard('sent', '-', COLORS.grey, '-');
@@ -581,7 +591,7 @@
             if (issueKey !== lastErrorKey) {
                 lastErrorKey = issueKey;
                 errs.forEach((r) => log('[ERROR]: ' + r.symbol + ': ' + r.error));
-                if (skips.length) log('[SKIP]: ' + skips.length + ' pair(s) below the minimum 24h volume: ' + skips.slice(0, 5).map((r) => r.symbol.split('/')[0]).join(', ') + (skips.length > 5 ? '...' : ''));
+                if (skips.length) log('[SKIP]: ' + skips.length + ' pair(s) not scanned (low volume, flat or not crypto): ' + skips.slice(0, 5).map((r) => r.symbol.split('/')[0]).join(', ') + (skips.length > 5 ? '...' : ''));
             }
             (data.paper.opened || []).forEach((t) => log('[PAPER]: Opened ' + t.symbol + ' @ ' + fmtPrice(t.entry) + ' (' + t.sizeUSDT + ' USDT)'));
             (data.paper.closed || []).forEach((t) => log('[PAPER]: Closed ' + t.symbol + ' ' + t.result + ' via ' + t.exitReason + ' ' + fmtUsd(t.pnlUSDT)));
