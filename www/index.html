@@ -597,6 +597,14 @@
                     card.appendChild(el('div', 'PnL: ' + fmtUsd(t.pnlUSDT) + ' (' + (t.pnlPct >= 0 ? '+' : '') + t.pnlPct.toFixed(2) + '%)', 'font-size: 12px; margin-bottom: 3px;'));
                     card.appendChild(el('div', 'Entry ' + fmtPrice(t.entry) + ' -> Exit ' + fmtPrice(t.exit) + ' (' + t.exitReason + ')', 'font-size: 12px; margin-bottom: 3px;'));
                 }
+                if (t.signal) {
+                    const sg = t.signal;
+                    card.appendChild(el('div',
+                        'Signal: ' + (sg.roc1hPct >= 0 ? '+' : '') + sg.roc1hPct + '%/1h, RSI ' + sg.rsi + ', vol x' + sg.volRatio +
+                        (Number.isFinite(sg.extAtr) ? ', ' + sg.extAtr + ' ATR above EMA21' : '') +
+                        (Number.isFinite(sg.chg24hPct) ? ', 24h ' + (sg.chg24hPct >= 0 ? '+' : '') + sg.chg24hPct + '%' : ''),
+                        'font-size: 11px; color: #8c9bae; margin-bottom: 3px;'));
+                }
                 card.appendChild(el('div', new Date(t.openedAt).toLocaleString() + ' | ' + t.exchange.toUpperCase(), 'font-size: 11px; color: #8c9bae;'));
                 list.appendChild(card);
             });
