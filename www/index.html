@@ -132,11 +132,10 @@
 
             <div class="section-title">Pairs (max 50, comma-separated)</div>
             <div class="form-group">
-                <textarea class="form-control" id="pair" rows="3" autocapitalize="characters" autocomplete="off" spellcheck="false" style="resize:none;">SOL/USDT, ETH/USDT, BTC/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, AVAX/USDT, LINK/USDT</textarea>
+                <textarea class="form-control" id="pair" rows="6" autocapitalize="characters" autocomplete="off" spellcheck="false" style="resize:none;">SOL/USDT, ETH/USDT, BTC/USDT, BNB/USDT, XRP/USDT, DOGE/USDT, AVAX/USDT, LINK/USDT</textarea>
             </div>
 
-            <button class="btn btn-secondary" id="btn-autofill" style="width:100%; margin: -4px 0 4px;">AUTO-FILL TOP 30 BY VOLUME</button>
-            <div class="hint">Replaces the list above with the most traded USDT pairs on the selected exchange. Thin pairs are skipped automatically.</div>
+            <div class="hint" style="margin: -4px 0 4px;">Type TOKEN/USDT, separated by commas or new lines (max 50). Tokens with very low volume, flat price, or stablecoins are skipped automatically.</div>
 
             <div class="section-title">API Credentials</div>
             <div class="form-group">
@@ -767,17 +766,6 @@
             stopPolling();
             setBadge('STATUS: STOPPED (KILL SWITCH)', COLORS.red);
             log('[SYSTEM]: Kill switch activated. Scanning stopped.');
-        });
-
-        $('btn-autofill').addEventListener('click', async () => {
-            setTestResult('Fetching top pairs...', COLORS.grey);
-            try {
-                const d = await request('/api/top-pairs?exchange=' + encodeURIComponent($('exchange').value) + '&n=30');
-                $('pair').value = d.symbols.join(', ');
-                setTestResult('✔ ' + d.symbols.length + ' pairs filled (24h volume at least $' + (d.minVolumeUSDT / 1e6) + 'M). Press SAVE & CONNECT.', COLORS.green);
-            } catch (e) {
-                setTestResult('✖ ' + e.message, COLORS.red);
-            }
         });
 
         $('journal-search').addEventListener('input', renderJournal);
