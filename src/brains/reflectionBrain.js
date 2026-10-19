@@ -1,24 +1,34 @@
-// src/reflectionBrain.js
-class ReflectionBrain {
-    async evaluate(pastTrades) {
-        // Susuriin ang nakaraang performance para mag-adjust ng diskarte
-        const trades = pastTrades || [];
-        const wins = trades.filter(t => t.result === 'WIN').length;
-        const total = trades.length;
-        
-        const winRate = total > 0 ? (wins / total) * 100 : 50;
+// Reflection Brain: looks at recent closed paper trades and advises on risk. Advisory only (never blocks).
+const DEFAULTS = { window: 20, minSample: 5, cautionWinRate: 40 };
 
-        let recommendation = "Maintain current risk parameters.";
-        if (winRate < 40 && total >= 5) {
-            recommendation = "High loss frequency detected. Lower risk per trade by 1%.";
-        }
+function evaluateReflection(trades = [], opts = {}) {
+    const cfg = { ...DEFAULTS, ...opts };
+    const closed = (Array.isArray(trades) ? trades : [])
+        .filter((t) => t && t.status === 'CLOSED' && (t.result === 'WIN' || t.result === 'LOSS'))
+        .sort((a, b) => (a.closedAt || 0) - (b.closedAt || 0))
+        .slice(-cfg.window);
 
+    const sample = closed.length;
+    if (sample < cfg.minSample) {
         return {
-            brain: "ReflectionBrain",
-            winRate: winRate.toFixed(1) + "%",
-            recommendation: recommendation
+            status: 'INSUFFICIENT_DATA',
+            sample,
+            winRate: null,
+            recommendation: `Need at least ${cfg.minSample} closed trades before adjusting.`
         };
     }
+
+    const wins = closed.filter((t) => t.result === 'WIN').length;
+    const winRate = Number(((wins / sample) * 100).toFixed(1));
+    if (winRate < cfg.cautionWinRate) {
+        return {
+            status: 'CAUTION',
+            sample,
+            winRate,
+            recommendation: `Win rate ${winRate}% over last ${sample} trades. Consider lowering risk per trade.`
+        };
+    }
+    return { status: 'NORMAL', sample, winRate, recommendation: 'Maintain current risk parameters.' };
 }
 
-module.exports = ReflectionBrain;
+module.exports = { evaluateReflection };

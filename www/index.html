@@ -50,6 +50,11 @@
         .brain-card.risk { background: rgba(59, 130, 246, 0.15); border: 1px solid #3b82f6; }
         .brain-card.sentiment { background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; }
         .brain-card.liquidity { background: rgba(139, 92, 246, 0.15); border: 1px solid #8b5cf6; }
+        .brain-card.macro { background: rgba(6, 182, 212, 0.15); border: 1px solid #06b6d4; }
+        .brain-card.mtf { background: rgba(236, 72, 153, 0.15); border: 1px solid #ec4899; }
+        .brain-card.vol { background: rgba(249, 115, 22, 0.15); border: 1px solid #f97316; }
+        .brain-card.refl { background: rgba(140, 155, 174, 0.12); border: 1px solid #8c9bae; }
+        .gauge-desc { font-size: 12px; color: #cbd5e1; margin-top: 6px; }
 
         .brain-title { font-size: 11px; font-weight: bold; color: #8c9bae; margin-bottom: 5px; display: flex; align-items: center; justify-content: center; gap: 4px; }
         .brain-status { font-size: 16px; font-weight: bold; margin-bottom: 4px; }
@@ -220,9 +225,36 @@
             </div>
         </div>
 
+        <div class="grid-2">
+            <div class="brain-card macro">
+                <div class="brain-title">🌍 MACRO (BTC)</div>
+                <div class="brain-status" id="macro-status" style="color: #8c9bae;">—</div>
+                <div class="brain-desc" id="macro-desc">Waiting for data.</div>
+            </div>
+            <div class="brain-card mtf">
+                <div class="brain-title">⏱️ MULTI-TIMEFRAME</div>
+                <div class="brain-status" id="mtf-status" style="color: #8c9bae;">—</div>
+                <div class="brain-desc" id="mtf-desc">Waiting for data.</div>
+            </div>
+        </div>
+
+        <div class="grid-2">
+            <div class="brain-card vol">
+                <div class="brain-title">⚡ VOLATILITY</div>
+                <div class="brain-status" id="vol-status" style="color: #8c9bae;">—</div>
+                <div class="brain-desc" id="vol-desc">Waiting for data.</div>
+            </div>
+            <div class="brain-card refl">
+                <div class="brain-title">🔁 REFLECTION</div>
+                <div class="brain-status" id="refl-status" style="color: #8c9bae;">—</div>
+                <div class="brain-desc" id="refl-desc">Waiting for data.</div>
+            </div>
+        </div>
+
         <div class="gauge-card">
             <div class="section-title" style="margin-top:0;">CHIEF COORDINATOR GAUGE</div>
             <div class="gauge-val" id="gauge-val">—</div>
+            <div class="gauge-desc" id="gauge-desc"></div>
         </div>
 
         <div class="card">
@@ -422,7 +454,7 @@
             if (d === 'BUY') return t.reasoning.replace(/^Uptrend: /, '');
             if (r.coordinator.blockedBy.includes('position_open')) return 'Position open';
             if (r.coordinator.blockedBy.includes('max_positions')) return 'Max open positions';
-            if (t.action === 'BUY') return 'Blocked: ' + r.coordinator.blockedBy.join(', ');
+            if (t.action === 'BUY') return 'Blocked: ' + r.coordinator.blockedBy.map(prettyReason).join(', ');
             return t.reasoning.replace(/^HOLD: /, '').split(';')[0].replace(/\.$/, '');
         }
 
@@ -543,19 +575,70 @@
             rest.forEach((r) => list.appendChild(makeRow(r)));
         }
 
+        function clip(text, n) {
+            const s = String(text == null ? '' : text);
+            return s.length > n ? s.slice(0, n - 1) + '…' : s;
+        }
+
+        function prettyReason(k) { return String(k).replace(/_/g, ' '); }
+
+        const NOT_ACTIVE = 'Off, or not provided by the server.';
+
+        function renderMacro(m) {
+            if (!m) return setCard('macro', '-', COLORS.grey, NOT_ACTIVE);
+            if (!m.available) return setCard('macro', 'UNAVAILABLE', COLORS.red, clip(m.reasoning, 140));
+            const color = !m.approved ? COLORS.red : (m.status === 'BULLISH' ? COLORS.green : COLORS.amber);
+            let desc = m.approved ? 'BTC trend OK. Altcoin entries allowed.' : 'BTC weak. Altcoin BUYs blocked.';
+            if (m.crash && m.crash.detected) desc = 'BTC crash: ' + m.crash.reasons.join('; ');
+            return setCard('macro', m.status + ' (' + m.macroScore + ')', color, clip(desc, 140));
+        }
+
+        function renderMtf(m) {
+            if (!m) return setCard('mtf', '-', COLORS.grey, NOT_ACTIVE);
+            if (!m.available) return setCard('mtf', 'UNAVAILABLE', COLORS.red, clip(m.reasoning, 140));
+            const color = m.approved ? COLORS.green : (m.alignment === 'CONFLICT' ? COLORS.red : COLORS.amber);
+            return setCard('mtf', String(m.alignment).replace('_', ' ') + ' (' + m.confluenceScore + ')', color, clip(m.reasoning, 140));
+        }
+
+        function renderVol(v) {
+            if (!v) return setCard('vol', '-', COLORS.grey, NOT_ACTIVE);
+            if (!v.available) return setCard('vol', 'UNAVAILABLE', COLORS.red, clip(v.details, 140));
+            let label = 'NO BREAKOUT';
+            let color = COLORS.grey;
+            if (v.breakoutDetected) { label = 'BREAKOUT'; color = COLORS.green; }
+            else if (v.direction === 'DOWN') { label = 'BREAKDOWN'; color = COLORS.red; }
+            return setCard('vol', label + ' (' + v.volatilityScore + ')', color, clip(v.details, 160));
+        }
+
+        // Reflection is account-wide (closed paper trades), not per pair.
+        function renderReflection() {
+            const rf = lastScan && lastScan.reflection;
+            if (!rf) return setCard('refl', '-', COLORS.grey, NOT_ACTIVE);
+            const wr = Number.isFinite(rf.winRate) ? ' Win rate ' + rf.winRate + '%.' : '';
+            const color = rf.status === 'CAUTION' ? COLORS.red : (rf.status === 'NORMAL' ? COLORS.green : COLORS.grey);
+            const label = rf.status === 'INSUFFICIENT_DATA' ? 'WAITING' : rf.status;
+            return setCard('refl', label + ' (' + rf.sample + ' trades)', color, clip(rf.recommendation + wr, 140));
+        }
+
         function renderDetail() {
             const r = lastScan && lastScan.results.find((x) => x.symbol === selectedSymbol);
             if (!r) return;
             $('detail-title').textContent = 'Details: ' + r.symbol;
             const g = $('gauge-val');
+            const gd = $('gauge-desc');
+            renderReflection();
             if (!hasResult(r)) {
                 const msg = r.error || (r.skipped ? skipText(r, false) : 'Waiting for its turn in the scan.');
                 setCard('tech', '-', COLORS.grey, msg);
                 setCard('risk', '-', COLORS.grey, '-');
                 setCard('sent', '-', COLORS.grey, '-');
                 setCard('liq', '-', COLORS.grey, '-');
+                setCard('macro', '-', COLORS.grey, '-');
+                setCard('mtf', '-', COLORS.grey, '-');
+                setCard('vol', '-', COLORS.grey, '-');
                 g.textContent = r.error ? 'NO DATA' : (r.skipped ? 'SKIPPED' : 'PENDING');
                 g.style.color = r.error ? COLORS.red : COLORS.grey;
+                gd.textContent = '';
                 return;
             }
             const c = r.coordinator;
@@ -563,11 +646,20 @@
             const t = b.technical;
             const s = b.sentiment;
             setCard('tech', (t.action || 'HOLD') + ' (' + t.score + '%)', t.action === 'BUY' ? COLORS.green : COLORS.amber, t.reasoning);
-            setCard('risk', b.risk.approved ? 'APPROVED' : 'REJECTED', b.risk.approved ? COLORS.blue : COLORS.red, b.risk.reasoning);
+            if (t.action !== 'BUY') {
+                // Risk is only evaluated on a BUY signal; "REJECTED" here was misleading.
+                setCard('risk', 'N/A', COLORS.grey, 'No BUY signal to evaluate.');
+            } else {
+                setCard('risk', b.risk.approved ? 'APPROVED' : 'REJECTED', b.risk.approved ? COLORS.blue : COLORS.red, b.risk.reasoning);
+            }
             setCard('sent', s.available ? s.status + ' (' + s.score + ')' : 'UNAVAILABLE', s.available ? COLORS.amber : COLORS.red, s.reasoning);
             setCard('liq', b.liquidity.status, b.liquidity.status === 'GOOD' ? COLORS.purple : COLORS.red, b.liquidity.reasoning);
+            renderMacro(b.macro);
+            renderMtf(b.multiTimeframe);
+            renderVol(b.volatility);
             g.textContent = c.overallConfidence + '% ' + c.finalDecision;
             g.style.color = c.finalDecision === 'BUY' ? COLORS.green : COLORS.amber;
+            gd.textContent = c.blockedBy.length ? 'Blocked by: ' + c.blockedBy.map(prettyReason).join(', ') : 'All filters passed.';
         }
 
         function handleScan(data) {

@@ -1,16 +1,47 @@
 {
-  "port": 3000,
-  "env": "development",
-  "exchanges": {
-    "binance": {
-      "enabled": false,
-      "sandbox": true
-    }
+  "port": 3001,
+  "host": "127.0.0.1",
+  "selected_exchange": "binance",
+  "trading_symbol": "SOL/USDT",
+  "risk_parameters": {
+    "max_risk_per_trade_percent": 2,
+    "stop_loss_percent": 2.5,
+    "take_profit_percent": 5
+  },
+  "brain_settings": {
+    "min_confidence_score": 70,
+    "weights": {
+      "technical": 3,
+      "volatility": 1.5,
+      "macro": 2,
+      "multi_timeframe": 2,
+      "sentiment": 1
+    },
+    "volatility_counts_only_on_breakout": true
   },
   "brains": {
     "technical": { "enabled": true },
     "risk": { "enabled": true },
-    "sentiment": { "enabled": false },
-    "liquidity": { "enabled": false }
+    "sentiment": { "enabled": true },
+    "liquidity": { "enabled": true },
+    "reflection": { "enabled": true },
+    "macro": { "enabled": true },
+    "multi_timeframe": { "enabled": true },
+    "volatility": { "enabled": true }
+  },
+  "scanner": {
+    "deep_per_cycle": 6,
+    "concurrency": 3,
+    "max_symbols": 50,
+    "min_quote_volume_usdt": 1000000,
+    "max_cache_age_sec": 900,
+    "excluded_bases": ["USDT", "USDC", "DAI", "TUSD", "FDUSD", "BUSD", "USDP", "USDD", "PYUSD", "EUR", "EURI", "AEUR", "GBP", "PAXG", "XAUT"]
+  },
+  "paper": {
+    "starting_balance_usdt": 1000,
+    "fee_percent": 0.1,
+    "slippage_percent": 0.05,
+    "max_open_positions": 3,
+    "min_position_usdt": 10
   }
 }
