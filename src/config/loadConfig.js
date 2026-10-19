@@ -41,6 +41,10 @@ function loadConfig(env = process.env) {
     if (![s.deep_per_cycle, s.concurrency, s.max_symbols].every((v) => Number.isInteger(v) && v > 0)) {
         throw new Error('Invalid scanner settings.');
     }
+    // 0 disables the background settle loop; otherwise 10s..1h.
+    if (!Number.isInteger(s.settle_interval_sec) || (s.settle_interval_sec !== 0 && (s.settle_interval_sec < 10 || s.settle_interval_sec > 3600))) {
+        throw new Error('Invalid scanner.settle_interval_sec (0 or 10..3600).');
+    }
     return config;
 }
 

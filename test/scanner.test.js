@@ -337,6 +337,33 @@ test('scan: open trade is settled on the next scan and shows up in paper.closed'
     assert.ok(ex.calls.some(([, tf]) => tf === '1m'));
 });
 
+test('settleAll: closes open trades without a scan, skips forming candle, no-op when nothing open', async () => {
+    const { scanner, engine, clock } = setup({
+        symbols: {
+            'SOL/USDT': {
+                path15: buyPath, path1h: up,
+                minute: (since) => [[since + MIN, 100, 101, 99, 100, 1], [since + 2 * MIN, 100, 200, 99, 150, 1]]
+            }
+        },
+        tickers: { 'SOL/USDT': goodTicker() }
+    });
+    assert.deepEqual(await scanner.settleAll(), []);
+    await scanner.scan(body());
+    assert.equal(engine.openCount(), 1);
+    clock.t = NOW + 2 * MIN + 1000; // the take-profit candle is still forming -> must not close yet
+    assert.equal((await scanner.settleAll()).length, 0);
+    assert.equal(engine.openCount(), 1);
+    clock.t = NOW + 6 * MIN; // TP candle (NOW+4m) has now closed
+    const closed = await scanner.settleAll();
+    assert.equal(closed.length, 1);
+    assert.equal(closed[0].exitReason, 'TAKE_PROFIT');
+    assert.equal(engine.openCount(), 0);
+});
+
+test('config: settle_interval_sec validation', () => {
+    assert.equal(loadConfig({}).scanner.settle_interval_sec, 60);
+});
+
 test('paper engine: persistence + corrupt file recovery', () => {
     const fs = require('node:fs'); const os = require('node:os');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbcb-'));
