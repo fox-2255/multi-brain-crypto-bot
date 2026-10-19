@@ -43,6 +43,28 @@ function createApp({ scanner, engine, log, allowedOrigins }) {
     return app;
 }
 
+// Sequential timer (never overlaps itself). Errors are logged and the loop keeps going.
+function startSettleLoop({ scanner, engine, intervalSec, log }) {
+    if (!intervalSec) { log('info', 'Background settle loop disabled.'); return () => {}; }
+    let timer = null;
+    let stopped = false;
+    const tick = async () => {
+        try {
+            if (engine.openCount() > 0) {
+                const closed = await scanner.settleAll();
+                for (const t of closed) log('info', `[PAPER] Closed ${t.symbol} ${t.exitReason} pnl ${t.pnlUSDT} USDT`);
+            }
+        } catch (err) {
+            log('warn', `settle loop: ${err.message}`);
+        }
+        if (!stopped) { timer = setTimeout(tick, intervalSec * 1000); timer.unref(); }
+    };
+    timer = setTimeout(tick, 5000);
+    timer.unref();
+    log('info', `Background settle loop every ${intervalSec}s.`);
+    return () => { stopped = true; clearTimeout(timer); };
+}
+
 function main() {
     const config = loadConfig();
     const log = createLogger(process.env.LOG_LEVEL);
@@ -73,8 +95,11 @@ function main() {
         log('info', `[MULTI-BRAIN SERVER] http://${config.host}:${config.port} (paper-only)`);
     });
 
+    const stopSettle = startSettleLoop({ scanner, engine, intervalSec: config.scanner.settle_interval_sec, log });
+
     function shutdown(signal) {
         log('info', `${signal} received, shutting down...`);
+        stopSettle();
         engine.save();
         server.close(() => process.exit(0));
         setTimeout(() => process.exit(1), 5000).unref();
@@ -86,4 +111,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { createApp };
+module.exports = { createApp, startSettleLoop };

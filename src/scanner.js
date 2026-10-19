@@ -277,7 +277,25 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
         return run;
     }
 
-    return { scan, _cache: cache };
+    // Background settlement: closes open paper trades on SL/TP without needing a client to poll.
+    // Shares the scan lock, so it never races a scan that is opening/closing positions.
+    async function runSettleAll() {
+        const names = [...new Set(engine.openTrades().map((t) => t.exchange))];
+        const closed = [];
+        for (const name of names) {
+            let exchange;
+            try { exchange = getExchange(name); } catch (err) { log('warn', `settle: ${err.message}`); continue; }
+            closed.push(...await settleOpen(exchange, name));
+        }
+        return closed;
+    }
+    function settleAll() {
+        const run = lock.then(runSettleAll);
+        lock = run.catch(() => {});
+        return run;
+    }
+
+    return { scan, settleAll, _cache: cache };
 }
 
 module.exports = { createScanner, mapLimit, SYMBOL_RE };
