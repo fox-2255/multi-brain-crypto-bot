@@ -2,6 +2,11 @@
 # Keeps the bot running: restarts with backoff if it dies. Stop with: ./stop.sh
 # Usage: nohup ./start.sh >/dev/null 2>&1 &
 cd "$(dirname "$0")" || exit 1
+# Refuse to start a second supervisor (it would fight the first one for the port).
+if [ -f .supervisor.pid ] && kill -0 "$(cat .supervisor.pid)" 2>/dev/null; then
+  echo "already running (supervisor pid $(cat .supervisor.pid)). Use ./stop.sh first." >&2
+  exit 1
+fi
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 echo $$ > .supervisor.pid
 trap 'kill "$CHILD" 2>/dev/null; rm -f .supervisor.pid; exit 0' INT TERM
