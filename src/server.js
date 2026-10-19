@@ -7,6 +7,7 @@ const { createLogger } = require('./lib/logger');
 const { httpError } = require('./lib/http');
 const { PaperEngine } = require('./lib/paperEngine');
 const { createScanner } = require('./scanner');
+const { exchangeOptions } = require('./lib/exchangeOptions');
 const { analyzeSentiment } = require('./brains/sentimentBrain');
 
 const REQUEST_TIMEOUT_MS = 10000;
@@ -73,7 +74,7 @@ function main() {
     const exchanges = new Map();
     function getExchange(name) {
         if (typeof name !== 'string' || !ccxt.exchanges.includes(name)) throw httpError(400, `Unsupported exchange: ${String(name).slice(0, 30)}`);
-        if (!exchanges.has(name)) exchanges.set(name, new ccxt[name]({ enableRateLimit: true, timeout: REQUEST_TIMEOUT_MS }));
+        if (!exchanges.has(name)) exchanges.set(name, new ccxt[name](exchangeOptions(name, REQUEST_TIMEOUT_MS)));
         return exchanges.get(name);
     }
 
