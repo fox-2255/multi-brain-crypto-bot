@@ -125,6 +125,8 @@ test('coordinator: every hard filter blocks, confidence is weighted', () => {
     }
     assert.ok(decide(base, { ...flags, positionOpen: true }, cfg).blockedBy.includes('position_open'));
     assert.ok(decide(base, { ...flags, maxPositions: true }, cfg).blockedBy.includes('max_positions'));
+    assert.ok(decide(base, { ...flags, dailyLossHalt: true }, cfg).blockedBy.includes('daily_loss_limit'));
+    assert.equal(decide({ ...base, tech: { action: 'HOLD', score: 50 } }, { ...flags, dailyLossHalt: true }, cfg).blockedBy.includes('daily_loss_limit'), false, 'halt only reported when a BUY was wanted');
     // macro unavailable -> approved false -> blocks (fail closed)
     assert.ok(decide({ ...base, macro: { available: false, approved: false, macroScore: 0 } }, flags, cfg).blockedBy.includes('macro'));
     // disabled brains are skipped
@@ -388,4 +390,45 @@ test('reflection: advisory recommendations', () => {
     assert.equal(evaluateReflection(mk(10, 2)).status, 'CAUTION');
     assert.equal(evaluateReflection(mk(10, 6)).status, 'NORMAL');
     assert.equal(evaluateReflection('junk').status, 'INSUFFICIENT_DATA');
+});
+
+test('buildPlan: max_position_percent caps size; config validates the new limits', () => {
+    const rp = { max_risk_per_trade_percent: 2, stop_loss_percent: 2.5, take_profit_percent: 5 };
+    const args = { price: 100, riskParams: rp, equityUSDT: 1000, availableUSDT: 1000, slippagePct: 0, minPositionUSDT: 10 };
+    assert.equal(buildPlan(args).positionSizeUSDT, 800, 'uncapped = risk/SL');
+    assert.equal(buildPlan({ ...args, maxPositionPercent: 25 }).positionSizeUSDT, 250);
+    assert.equal(buildPlan({ ...args, maxPositionPercent: 25, availableUSDT: 100 }).positionSizeUSDT, 100, 'free balance still wins');
+    assert.equal(loadConfig({}).paper.max_position_percent, 25);
+    for (const [k, v] of [['max_position_percent', 0], ['max_position_percent', 101], ['max_daily_loss_percent', 0], ['max_daily_loss_percent', 'x']]) {
+        const defaults = require(path.join(SRC, 'config', 'defaultConfig.json'));
+        const old = defaults.paper[k];
+        defaults.paper[k] = v;
+        try { assert.throws(() => loadConfig({}), /Invalid paper/, `${k}=${v}`); } finally { defaults.paper[k] = old; }
+    }
+});
+
+test('engine: rolling 24h daily loss halt', () => {
+    let t = NOW;
+    const e = new PaperEngine({ startingBalance: 1000, feePct: 0.1, slippagePct: 0.05, now: () => t });
+    const add = (pnl, closedAt) => e.trades.push({ id: e.nextId++, exchange: 'x', symbol: 'S/USDT', status: 'CLOSED', pnlUSDT: pnl, closedAt, openedAt: closedAt - 1, entry: 1, stopLoss: 1, takeProfit: 1, sizeUSDT: 1, checkedTs: closedAt });
+    assert.equal(e.dailyLossHalted(5), false, 'no trades');
+    add(-30, t - 60 * MIN);
+    assert.equal(e.dailyLossHalted(5), false, '-30 of 1030 = 2.9% < 5%');
+    add(-25, t - 30 * MIN);
+    assert.equal(e.dailyLossHalted(5), true, '-55 of 1055 = 5.2% >= 5%');
+    t += 25 * 60 * MIN; // both losses are now older than 24h
+    assert.equal(e.dailyLossHalted(5), false, 'window rolled');
+    add(+500, t - MIN);
+    assert.equal(e.dailyLossHalted(5), false, 'gains never halt');
+});
+
+test('scan: daily loss halt blocks new entries but not the scan', async () => {
+    const syms = ['H1/USDT'];
+    const symbols = { 'H1/USDT': { path15: buyPath, path1h: up } };
+    const tickers = { 'H1/USDT': goodTicker() };
+    const { scanner, engine } = setup({ symbols, tickers });
+    engine.trades.push({ id: 900, exchange: 'x', symbol: 'Z/USDT', status: 'CLOSED', result: 'LOSS', pnlUSDT: -80, pnlPct: -2.7, closedAt: NOW - MIN, openedAt: NOW - 2 * MIN, entry: 1, stopLoss: 1, takeProfit: 1, sizeUSDT: 800, checkedTs: NOW - MIN });
+    const r = await scanner.scan(body({ symbols: syms }));
+    assert.equal(engine.openCount(), 0);
+    assert.ok(r.results[0].coordinator.blockedBy.includes('daily_loss_limit'));
 });

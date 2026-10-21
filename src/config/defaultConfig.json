@@ -43,6 +43,8 @@
     "fee_percent": 0.1,
     "slippage_percent": 0.05,
     "max_open_positions": 3,
+    "max_position_percent": 25,
+    "max_daily_loss_percent": 5,
     "min_position_usdt": 10
   }
 }

@@ -72,6 +72,17 @@ class PaperEngine {
         return this.trades.filter((t) => t.status === 'CLOSED').reduce((a, t) => a + t.pnlUSDT, 0);
     }
     equity() { return this.startingBalance + this.realizedPnl(); }
+
+    // True when realized losses over the last 24h reach limitPct of the equity at the start of that
+    // window. Rolling window (not calendar day) so there is no timezone edge and no reset loophole.
+    dailyLossHalted(limitPct) {
+        const since = this.now() - 24 * 60 * MINUTE_MS;
+        const pnl = this.trades
+            .filter((t) => t.status === 'CLOSED' && isNum(t.closedAt) && t.closedAt >= since)
+            .reduce((a, t) => a + t.pnlUSDT, 0);
+        const base = this.equity() - pnl;
+        return pnl < 0 && base > 0 && -pnl >= base * (limitPct / 100);
+    }
     availableUSDT() {
         const used = this.trades.filter((t) => t.status === 'OPEN').reduce((a, t) => a + t.sizeUSDT, 0);
         return Math.max(0, this.equity() - used);

@@ -4,14 +4,17 @@ const { isNum } = require('./lib/indicators');
 const enabled = (cfg, name) => cfg.brains[name]?.enabled !== false;
 const round2 = (x) => Number(x.toFixed(2));
 
-// Paper position plan. Size = risk amount / stop distance, capped by free balance.
+// Paper position plan. Size = risk amount / stop distance, capped by free balance and by
+// maxPositionPercent of equity (when given).
 // Returns null when the free balance cannot cover the minimum position.
-function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, minPositionUSDT }) {
+function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, minPositionUSDT, maxPositionPercent }) {
     if (![price, equityUSDT, availableUSDT].every(isNum) || price <= 0) return null;
     const entry = price * (1 + slippagePct / 100);
     const sl = riskParams.stop_loss_percent / 100;
     const riskAmount = equityUSDT * (riskParams.max_risk_per_trade_percent / 100);
-    const size = Math.min(riskAmount / sl, availableUSDT);
+    const caps = [riskAmount / sl, availableUSDT];
+    if (isNum(maxPositionPercent) && maxPositionPercent > 0) caps.push(equityUSDT * (maxPositionPercent / 100));
+    const size = Math.min(...caps);
     if (!(size >= minPositionUSDT)) return null;
     return {
         simulated: true,
@@ -23,7 +26,7 @@ function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, 
 }
 
 // inputs: { tech, risk, sentiment, liquidity, macro, mtf, vol, plan }
-// flags:  { positionOpen, maxPositions, insufficientBalance }
+// flags:  { positionOpen, maxPositions, insufficientBalance, dailyLossHalt }
 //
 // Gating brains (any one blocks): technical signal, risk, sentiment availability, liquidity,
 // macro, multi-timeframe, position/balance limits.
@@ -64,6 +67,7 @@ function decide(inputs, flags, cfg) {
     if (flags.positionOpen) blockedBy.push('position_open');
     else if (wantsBuy) {
         if (flags.maxPositions) blockedBy.push('max_positions');
+        if (flags.dailyLossHalt) blockedBy.push('daily_loss_limit');
         if (flags.insufficientBalance) blockedBy.push('insufficient_balance');
     }
 

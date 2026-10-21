@@ -35,6 +35,10 @@ function loadConfig(env = process.env) {
     if (![p.starting_balance_usdt, p.max_open_positions, p.min_position_usdt].every(isPos)) {
         throw new Error('Invalid paper settings.');
     }
+    // Position cap (% of equity per trade) must be in (0, 100]; daily loss halt in (0, 100], rolling 24h.
+    for (const [k, v] of [['max_position_percent', p.max_position_percent], ['max_daily_loss_percent', p.max_daily_loss_percent]]) {
+        if (!isPos(v) || v > 100) throw new Error(`Invalid paper.${k} (must be > 0 and <= 100).`);
+    }
     if (!isNonNeg(p.fee_percent) || !isNonNeg(p.slippage_percent)) throw new Error('Invalid paper fee/slippage.');
 
     const s = config.scanner;

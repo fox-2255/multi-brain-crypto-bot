@@ -142,13 +142,15 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
             equityUSDT: engine.equity(),
             availableUSDT: engine.availableUSDT(),
             slippagePct: config.paper.slippage_percent,
-            minPositionUSDT: config.paper.min_position_usdt
+            minPositionUSDT: config.paper.min_position_usdt,
+            maxPositionPercent: config.paper.max_position_percent
         });
+        const dailyLossHalt = engine.dailyLossHalted(config.paper.max_daily_loss_percent);
         const insufficientBalance = tech.action === 'BUY' && plan === null && !positionOpen && !maxPositions;
 
         const coordinator = decide(
             { tech, risk, sentiment, liquidity, macro, mtf, vol, plan },
-            { positionOpen, maxPositions, insufficientBalance },
+            { positionOpen, maxPositions, insufficientBalance, dailyLossHalt },
             config
         );
         return {
