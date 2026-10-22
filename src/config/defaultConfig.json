@@ -47,6 +47,7 @@
     "min_quote_volume_usdt": 1000000,
     "max_cache_age_sec": 900,
     "settle_interval_sec": 60,
+    "auto_scan_interval_sec": 60,
     "excluded_bases": ["USDT", "USDC", "DAI", "TUSD", "FDUSD", "BUSD", "USDP", "USDD", "PYUSD", "EUR", "EURI", "AEUR", "GBP", "PAXG", "XAUT"]
   },
   "paper": {

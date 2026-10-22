@@ -61,6 +61,10 @@ function loadConfig(env = process.env) {
     if (!Number.isInteger(s.settle_interval_sec) || (s.settle_interval_sec !== 0 && (s.settle_interval_sec < 10 || s.settle_interval_sec > 3600))) {
         throw new Error('Invalid scanner.settle_interval_sec (0 or 10..3600).');
     }
+    // 0 disables the server-side auto-scan loop; otherwise 15s..1h.
+    if (!Number.isInteger(s.auto_scan_interval_sec) || (s.auto_scan_interval_sec !== 0 && (s.auto_scan_interval_sec < 15 || s.auto_scan_interval_sec > 3600))) {
+        throw new Error('Invalid scanner.auto_scan_interval_sec (0 or 15..3600).');
+    }
     return config;
 }
 

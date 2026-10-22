@@ -661,3 +661,55 @@ test('scan: trend-only mode ignores dips, a dip with a too-distant swing low is 
     assert.equal(r2.results[0].coordinator.blockedBy.includes('insufficient_balance'), false, 'a risk rejection is not a balance problem');
     assert.equal(b.engine.openCount(), 0);
 });
+
+test('config: auto_scan_interval_sec validation', () => {
+    assert.equal(loadConfig({}).scanner.auto_scan_interval_sec, 60);
+});
+
+test('auto-scan: remembers the last accepted request, persists it, and scans on its own', async () => {
+    const fs = require('node:fs'); const os = require('node:os');
+    const { startAutoScanLoop, pickRequest, loadRequest } = require(path.join(SRC, 'lib', 'autoScan'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbcb-as-'));
+    const file = path.join(dir, 'scan_request.json');
+
+    // only whitelisted keys are kept; live trading can never be remembered
+    assert.deepEqual(pickRequest({ symbols: ['A/USDT'], paperTrading: false, evil: 1, exchangeName: 'binance' }),
+        { paperTrading: true, symbols: ['A/USDT'], exchangeName: 'binance' });
+    assert.equal(pickRequest({}), null);
+    assert.equal(pickRequest(null), null);
+
+    const calls = [];
+    const scanner = { scan: async (req) => { calls.push(req); } };
+    const loop = startAutoScanLoop({ scanner, file, intervalSec: 15, log: () => {} });
+    loop.remember({ symbols: ['SOL/USDT'], riskParams: { take_profit_percent: 5 } });
+    assert.deepEqual(loadRequest(file).symbols, ['SOL/USDT']);
+    loop.stop();
+
+    // a restart picks the saved request up without any client
+    const loop2 = startAutoScanLoop({ scanner, file, intervalSec: 15, log: () => {} });
+    loop2.stop();
+    assert.equal(loadRequest(file).riskParams.take_profit_percent, 5);
+    assert.equal(startAutoScanLoop({ scanner, file, intervalSec: 0, log: () => {} }).stop(), undefined);
+});
+
+test('auto-scan: loop calls scan, survives errors and backs off', async () => {
+    const fs = require('node:fs'); const os = require('node:os');
+    const { startAutoScanLoop, saveRequest } = require(path.join(SRC, 'lib', 'autoScan'));
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mbcb-as2-')), 'r.json');
+    saveRequest(file, { paperTrading: true, symbols: ['A/USDT'] });
+    const realSetTimeout = global.setTimeout;
+    const delays = [];
+    let n = 0;
+    let resolveDone; const done = new Promise((r) => { resolveDone = r; });
+    global.setTimeout = (fn, ms) => { delays.push(ms); const t = realSetTimeout(fn, 0); t.unref = () => t; return t; }; // keep ref'd so the test runner waits
+    try {
+        const scanner = { scan: async () => { n++; if (n === 1) throw new Error('boom'); if (n === 3) resolveDone(); } };
+        const loop = startAutoScanLoop({ scanner, file, intervalSec: 15, log: () => {} });
+        await done;
+        loop.stop();
+    } finally { global.setTimeout = realSetTimeout; }
+    assert.ok(n >= 3, 'kept scanning after an error');
+    assert.equal(delays[0], 10000);          // first tick
+    assert.equal(delays[1], 30000);          // after 1 failure: 15s * 2
+    assert.equal(delays[2], 15000);          // success resets the backoff
+});

@@ -7,12 +7,13 @@ const { createLogger } = require('./lib/logger');
 const { httpError } = require('./lib/http');
 const { PaperEngine } = require('./lib/paperEngine');
 const { createScanner } = require('./scanner');
+const { startAutoScanLoop } = require('./lib/autoScan');
 const { exchangeOptions } = require('./lib/exchangeOptions');
 const { analyzeSentiment } = require('./brains/sentimentBrain');
 
 const REQUEST_TIMEOUT_MS = 10000;
 
-function createApp({ scanner, engine, log, allowedOrigins }) {
+function createApp({ scanner, engine, log, allowedOrigins, onScanOk = () => {} }) {
     const app = express();
     app.disable('x-powered-by');
     app.use(cors({
@@ -24,7 +25,9 @@ function createApp({ scanner, engine, log, allowedOrigins }) {
 
     app.post('/api/scan', async (req, res) => {
         try {
-            res.json(await scanner.scan(req.body));
+            const result = await scanner.scan(req.body);
+            onScanOk(req.body); // only accepted requests are remembered for the auto-scan loop
+            res.json(result);
         } catch (err) {
             const status = err.status || 500;
             if (status >= 500) log('error', err.stack || err.message);
@@ -90,17 +93,20 @@ function main() {
 
     const scanner = createScanner({ config, getExchange, analyzeSentiment, engine, log });
     const allowedOrigins = (process.env.CORS_ORIGIN || 'https://localhost,http://localhost').split(',').map((s) => s.trim());
-    const app = createApp({ scanner, engine, log, allowedOrigins });
+    let autoScan = { stop: () => {}, remember: () => {} };
+    const app = createApp({ scanner, engine, log, allowedOrigins, onScanOk: (body) => autoScan.remember(body) });
 
     const server = app.listen(config.port, config.host, () => {
         log('info', `[MULTI-BRAIN SERVER] http://${config.host}:${config.port} (paper-only)`);
     });
 
     const stopSettle = startSettleLoop({ scanner, engine, intervalSec: config.scanner.settle_interval_sec, log });
+    autoScan = startAutoScanLoop({ scanner, file: path.join(dataDir, 'scan_request.json'), intervalSec: config.scanner.auto_scan_interval_sec, log });
 
     function shutdown(signal) {
         log('info', `${signal} received, shutting down...`);
         stopSettle();
+        autoScan.stop();
         engine.save();
         server.close(() => process.exit(0));
         setTimeout(() => process.exit(1), 5000).unref();
