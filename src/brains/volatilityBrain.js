@@ -10,7 +10,10 @@ const DEFAULTS = {
     compressionRatio: 0.9,   // ATR before breakout < 90% of its recent average = consolidation
     compressionWindow: 50,
     bookLevels: 5,
-    bookImbalanceFull: 1.5   // bid/ask notional ratio that earns the full order-book points
+    bookImbalanceFull: 1.5,  // bid/ask notional ratio that earns the full order-book points
+    reversalWindow: 8,       // detectReversal: candles scanned for the capitulation / support test
+    capitulationRatio: 1.5,  // detectReversal: peak volume in the window vs baseline that counts as capitulation
+    minPullbackAtr: 1.5      // detectReversal: the dip must be at least this many ATR below the recent high
     // now: injectable clock for tests
 };
 
@@ -142,4 +145,72 @@ function detectBreakout(ohlcv, orderBook = null, opts = {}) {
     };
 }
 
-module.exports = { calculateATR, detectBreakout };
+// Dip counterpart of detectBreakout: after a real pullback (>= minPullbackAtr below the recent high), was there
+// capitulation volume at the low, and is the last closed candle now a reversal (green, closing above the
+// previous high)? Same shape as detectBreakout, with reversalDetected instead of breakoutDetected (always false).
+function detectReversal(ohlcv, orderBook = null, opts = {}) {
+    const cfg = { ...DEFAULTS, ...opts };
+    const prep = prepareCandles(ohlcv, {
+        timeframe: cfg.timeframe,
+        minLength: cfg.atrPeriod + cfg.lookback + cfg.reversalWindow + 10,
+        now: cfg.now
+    });
+    const fail = (reason) => ({ ...unavailable(reason), reversalDetected: false });
+    if (prep.error) return fail(prep.error);
+
+    const c = prep.candles;
+    const n = c.length;
+    const W = cfg.reversalWindow;
+    const last = c[n - 1];
+    const prev = c[n - 2];
+    const recent = c.slice(n - W);
+    const base = c.slice(n - W - cfg.lookback, n - W);     // the range BEFORE the dip
+    const baseVol = mean(base.map((x) => x.volume));
+    if (!(baseVol > 0)) return fail('baseline volume is zero.');
+    const atr = atrSeries(c, cfg.atrPeriod)[n - 1];
+    if (!(atr > 0)) return fail('ATR not computable.');
+
+    const recentHigh = Math.max(...base.map((x) => x.high), ...recent.map((x) => x.high));
+    const dipLow = recent.reduce((m, x) => (x.low < m.low ? x : m), recent[0]);
+    const pullbackAtr = (recentHigh - dipLow.low) / atr;
+    const pulledBack = pullbackAtr >= cfg.minPullbackAtr;
+    const peakVolRatio = Math.max(...recent.map((x) => x.volume)) / baseVol;
+    const lastVolRatio = last.volume / baseVol;
+    const dipRange = dipLow.high - dipLow.low;
+    const dipWick = dipRange > 0 ? (Math.min(dipLow.open, dipLow.close) - dipLow.low) / dipRange : 0;
+    const reversalCandle = last.close > last.open && last.close > prev.high;
+    const imbalance = bookImbalance(orderBook, cfg.bookLevels);
+    const capitulation = peakVolRatio >= cfg.capitulationRatio;
+
+    let score = 0;
+    score += clamp(pullbackAtr / (cfg.minPullbackAtr * 2), 0, 1) * 30;
+    score += clamp((peakVolRatio - 1) / (cfg.capitulationRatio * 4 / 3 - 1), 0, 1) * 25;
+    if (dipWick >= 0.4) score += 10;
+    score += clamp((lastVolRatio - 0.8) / 0.7, 0, 1) * 15;
+    if (reversalCandle) score += 5;
+    if (imbalance !== null) score += clamp((imbalance - 1) / (cfg.bookImbalanceFull - 1), 0, 1) * 15;
+
+    const reversalDetected = pulledBack && reversalCandle && capitulation;
+    if (!reversalDetected) score = Math.min(score, 49);
+    score = Math.round(clamp(score, 0, 100));
+
+    const notes = [
+        `pullback ${sig6(pullbackAtr)} ATR from the recent high${pulledBack ? '' : ' (too shallow)'}`,
+        `peak volume ${sig6(peakVolRatio)}x base${capitulation ? ' (capitulation)' : ''}`,
+        reversalCandle ? 'green reversal candle above previous high' : 'no reversal candle yet'
+    ];
+    if (dipWick >= 0.4) notes.push('long lower wick at the low');
+    if (imbalance !== null) notes.push(`book bid/ask ${sig6(imbalance)}`);
+
+    return {
+        available: true,
+        volatilityScore: score,
+        breakoutDetected: false,
+        reversalDetected,
+        direction: reversalDetected ? 'UP' : null,
+        details: `Reversal: ${notes.join('; ')}.`,
+        metrics: { dipLow: sig6(dipLow.low), pullbackAtr: sig6(pullbackAtr), peakVolumeRatio: sig6(peakVolRatio), lastVolumeRatio: sig6(lastVolRatio), capitulation, reversalCandle, bookImbalance: sig6(imbalance), signalCandleTs: last.ts }
+    };
+}
+
+module.exports = { calculateATR, detectBreakout, detectReversal };

@@ -36,6 +36,12 @@ function loadConfig(env = process.env) {
         throw new Error('Invalid technical settings (rsi_max 0-100, max_ext_atr > 0, min_volume_ratio >= 0).');
     }
 
+    if (!['trend', 'dip', 'both'].includes(tc.entry_mode)) throw new Error('Invalid technical.entry_mode (must be "trend", "dip" or "both").');
+    if (!isPos(tc.dip_rsi) || tc.dip_rsi >= 50 || !Number.isInteger(tc.dip_lookback) || tc.dip_lookback < 2 || tc.dip_lookback > 30
+        || !isPos(tc.dip_rr) || !isPos(tc.dip_min_risk_pct) || !(tc.dip_max_risk_pct > tc.dip_min_risk_pct) || tc.dip_max_risk_pct > 10) {
+        throw new Error('Invalid technical dip settings.');
+    }
+
     const p = config.paper;
     if (![p.starting_balance_usdt, p.max_open_positions, p.min_position_usdt].every(isPos)) {
         throw new Error('Invalid paper settings.');

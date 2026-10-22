@@ -2,11 +2,11 @@
 // subset with all brains -> coordinator decision -> open paper positions for the best BUYs.
 // No express/ccxt import here: the exchange getter and sentiment source are injected.
 const { analyzeTechnical } = require('./brains/technicalBrain');
-const { evaluateRisk, normalizeRiskParams } = require('./brains/riskBrain');
+const { evaluateRisk, normalizeRiskParams, dipLevels } = require('./brains/riskBrain');
 const { evaluateLiquidity } = require('./brains/liquidityBrain');
 const { analyzeMacroTrend } = require('./brains/macroBrain');
 const { evaluateMultiTimeframe } = require('./brains/multiTimeframeBrain');
-const { detectBreakout } = require('./brains/volatilityBrain');
+const { detectBreakout, detectReversal } = require('./brains/volatilityBrain');
 const { evaluateReflection } = require('./brains/reflectionBrain');
 const { buildPlan, decide } = require('./coordinator');
 const { httpError } = require('./lib/http');
@@ -130,12 +130,14 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
         const t = now();
         const tc = config.technical;
         const tech = analyzeTechnical(item.ohlcv15, item.ticker, {
-            now: t, rsiMax: tc.rsi_max, maxExtAtr: tc.max_ext_atr, minVolRatio: tc.min_volume_ratio
+            now: t, rsiMax: tc.rsi_max, maxExtAtr: tc.max_ext_atr, minVolRatio: tc.min_volume_ratio,
+            entryMode: tc.entry_mode, dipRsi: tc.dip_rsi, dipLookback: tc.dip_lookback
         });
-        const risk = enabled('risk') ? evaluateRisk(tech, riskParams) : { approved: true, reasoning: 'Risk brain disabled.' };
+        const isDip = tech.action === 'BUY' && tech.setup === 'dip';
+        const risk = enabled('risk') ? evaluateRisk(tech, riskParams, { price: item.ticker.last, tc }) : { approved: true, reasoning: 'Risk brain disabled.' };
         const liquidity = enabled('liquidity') ? evaluateLiquidity(item.book) : { status: 'GOOD', reasoning: 'Liquidity brain disabled.' };
-        const mtf = enabled('multi_timeframe') ? evaluateMultiTimeframe(item.ohlcv15, item.ohlcv1h, { now: t }) : null;
-        const vol = enabled('volatility') ? detectBreakout(item.ohlcv15, item.book, { now: t }) : null;
+        const mtf = enabled('multi_timeframe') ? evaluateMultiTimeframe(item.ohlcv15, item.ohlcv1h, { now: t, mode: isDip ? 'dip' : 'trend' }) : null;
+        const vol = enabled('volatility') ? (isDip ? detectReversal(item.ohlcv15, item.book, { now: t }) : detectBreakout(item.ohlcv15, item.book, { now: t })) : null;
 
         const positionOpen = engine.hasOpen(exchangeName, item.symbol);
         const maxPositions = !positionOpen && engine.openCount() >= config.paper.max_open_positions;
@@ -146,11 +148,12 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
             availableUSDT: engine.availableUSDT(),
             slippagePct: config.paper.slippage_percent,
             minPositionUSDT: config.paper.min_position_usdt,
-            maxPositionPercent: config.paper.max_position_percent
+            maxPositionPercent: config.paper.max_position_percent,
+            levels: isDip ? dipLevels(item.ticker.last, tech.signal?.swingLow, tc) : null
         });
         const cooldown = !positionOpen && engine.inCooldown(exchangeName, item.symbol, config.paper.cooldown_minutes);
         const dailyLossHalt = engine.dailyLossHalted(config.paper.max_daily_loss_percent);
-        const insufficientBalance = tech.action === 'BUY' && plan === null && !positionOpen && !maxPositions;
+        const insufficientBalance = tech.action === 'BUY' && risk.approved && plan === null && !positionOpen && !maxPositions;
 
         const coordinator = decide(
             { tech, risk, sentiment, liquidity, macro, mtf, vol, plan },
@@ -227,7 +230,8 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
                     symbol: fresh.symbol,
                     plan: fresh.coordinator.plan,
                     score: fresh.coordinator.overallConfidence,
-                    signal: fresh.brains.technical.signal
+                    signal: fresh.brains.technical.signal,
+                    setup: fresh.brains.technical.setup
                 });
                 opened.push(trade);
                 log('info', `PAPER BUY ${exchangeName} ${trade.symbol} @ ${trade.entry} size ${trade.sizeUSDT} USDT (confidence ${trade.score})`);

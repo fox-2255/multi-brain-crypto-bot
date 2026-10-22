@@ -113,7 +113,7 @@ class PaperEngine {
         };
     }
 
-    open({ exchange, symbol, plan, score, signal }) {
+    open({ exchange, symbol, plan, score, signal, setup }) {
         if (this.hasOpen(exchange, symbol)) throw new Error(`Position already open: ${exchange} ${symbol}`);
         const openedAt = this.now();
         const trade = {
@@ -127,6 +127,7 @@ class PaperEngine {
             sizeUSDT: plan.positionSizeUSDT,
             score,
             signal: signal || null,
+            setup: setup || 'trend',
             openedAt,
             checkedTs: openedAt // only 1m candles that start after entry count
         };

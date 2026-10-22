@@ -46,7 +46,7 @@ function mockExchange({ btcPath = up, symbols = {}, tickers = {}, id = 'mock-' +
             const cfg = symbols[s];
             if (!cfg) throw new Error('no ohlcv for ' + s);
             if (tf === '1m') return cfg.minute ? cfg.minute(since) : [];
-            return gen(tf, 120, tf === '15m' ? cfg.path15 : cfg.path1h, { vol: (i) => (i === 119 ? cfg.lastVol ?? 300 : 100) });
+            return gen(tf, 120, tf === '15m' ? cfg.path15 : cfg.path1h, { range: cfg.range ?? 0.004, vol: tf === '15m' && cfg.vol15 ? cfg.vol15 : (i) => (i === 119 ? cfg.lastVol ?? 300 : 100) });
         },
         fetchOrderBook: async () => ({ bids: [[100, 50], [99.95, 50]], asks: [[100.05, 20], [100.1, 20]] })
     };
@@ -488,9 +488,12 @@ test('engine: records max favorable / adverse excursion while settling', () => {
 
 test('config: technical and cooldown settings validated', () => {
     const defaults = require(path.join(SRC, 'config', 'defaultConfig.json'));
-    assert.deepEqual(loadConfig({}).technical, { rsi_max: 68, max_ext_atr: 1.5, min_volume_ratio: 1.0 });
+    assert.deepEqual(loadConfig({}).technical, {
+        rsi_max: 68, max_ext_atr: 1.5, min_volume_ratio: 1.0, entry_mode: 'both',
+        dip_rsi: 40, dip_lookback: 8, dip_rr: 2, dip_min_risk_pct: 0.8, dip_max_risk_pct: 3.5
+    });
     assert.equal(loadConfig({}).paper.cooldown_minutes, 240);
-    const cases = [[defaults.technical, 'rsi_max', 101], [defaults.technical, 'max_ext_atr', 0], [defaults.technical, 'min_volume_ratio', -1], [defaults.paper, 'cooldown_minutes', -5]];
+    const cases = [[defaults.technical, 'entry_mode', 'sideways'], [defaults.technical, 'dip_rsi', 55], [defaults.technical, 'dip_lookback', 1], [defaults.technical, 'dip_rr', 0], [defaults.technical, 'dip_max_risk_pct', 0.5], [defaults.technical, 'rsi_max', 101], [defaults.technical, 'max_ext_atr', 0], [defaults.technical, 'min_volume_ratio', -1], [defaults.paper, 'cooldown_minutes', -5]];
     for (const [obj, k, v] of cases) {
         const old = obj[k]; obj[k] = v;
         try { assert.throws(() => loadConfig({}), /Invalid/, `${k}=${v}`); } finally { obj[k] = old; }
@@ -506,4 +509,155 @@ test('scan: a symbol that just lost is in cooldown, a fresh one still opens', as
     const get = (s) => r.results.find((x) => x.symbol === s);
     assert.ok(get('K1/USDT').coordinator.blockedBy.includes('cooldown'));
     assert.equal(get('K2/USDT').coordinator.finalDecision, 'BUY');
+});
+
+// ---- dip mode -------------------------------------------------------------------------------------
+const { checkConfluence } = require(path.join(SRC, 'brains', 'multiTimeframeBrain'));
+const { detectReversal, detectBreakout } = require(path.join(SRC, 'brains', 'volatilityBrain'));
+const { dipLevels, evaluateRisk } = require(path.join(SRC, 'brains', 'riskBrain'));
+
+// Uptrend (+0.2/candle), `down` red candles, then `up` strong green ones: a shallow V inside an uptrend.
+function dipArr(n = 120, down_ = 4, drop = 0.9, up_ = 3, rise = 1.1) {
+    const out = []; let p = 100;
+    for (let i = 0; i < n - down_ - up_; i++) { p += 0.2; out.push(p); }
+    for (let i = 0; i < down_; i++) { p -= drop; out.push(p); }
+    for (let i = 0; i < up_; i++) { p += rise; out.push(p); }
+    return out;
+}
+const dipCandles = (opts = {}) => gen('15m', 120, (i) => (opts.arr ?? dipArr())[i], { range: 0.001, vol: opts.vol });
+const capitulation = (i) => (i >= 113 && i <= 116 ? 250 : 100);
+
+test('technical: dip reversal is a BUY in dip/both mode, HOLD in trend mode; falling candles never qualify', () => {
+    const c = dipCandles();
+    const dip = analyzeTechnical(c, null, { now: NOW, entryMode: 'dip' });
+    assert.equal(dip.action, 'BUY'); assert.equal(dip.setup, 'dip');
+    assert.ok(dip.signal.swingLow > 0 && dip.signal.swingLow < c.at(-1)[4]);
+    assert.ok(dip.score >= 60);
+    assert.equal(analyzeTechnical(c, null, { now: NOW, entryMode: 'both' }).setup, 'dip');
+    assert.equal(analyzeTechnical(c, null, { now: NOW, entryMode: 'trend', maxExtAtr: 1.5, rsiMax: 68 }).action, 'HOLD', 'with the production limits this is too extended for a trend entry');
+    // still falling (last candle red): must not buy
+    const falling = gen('15m', 120, (i) => dipArr(120, 5, 0.9, 0)[i], { range: 0.001 });
+    const f = analyzeTechnical(falling, null, { now: NOW, entryMode: 'dip' });
+    assert.equal(f.action, 'HOLD'); assert.match(f.reasoning, /no dip entry/);
+    // plain uptrend with no pullback: not a dip
+    const trendOnly = analyzeTechnical(gen('15m', 120, buyPath), null, { now: NOW, entryMode: 'dip' });
+    assert.equal(trendOnly.action, 'HOLD');
+    // 'both' still returns the classic trend BUY when there is no dip
+    const t = analyzeTechnical(gen('15m', 120, buyPath), null, { now: NOW, entryMode: 'both' });
+    assert.equal(t.action, 'BUY'); assert.equal(t.setup, 'trend');
+});
+
+test('multi-timeframe: dip mode accepts a pullback inside a bullish higher trend only', () => {
+    const neutral = { bias: 'NEUTRAL', score: 50 }, bull = { bias: 'BULLISH', score: 85 }, bear = { bias: 'BEARISH', score: 20 };
+    assert.equal(checkConfluence(neutral, bull, {}).approved, false, 'trend mode unchanged');
+    const d = checkConfluence(neutral, bull, { mode: 'dip' });
+    assert.equal(d.approved, true); assert.equal(d.alignment, 'PULLBACK_UPTREND'); assert.ok(d.confluenceScore >= 60);
+    assert.equal(checkConfluence(bull, bull, { mode: 'dip' }).alignment, 'STRONG_ALIGNMENT');
+    assert.equal(checkConfluence(neutral, { bias: 'NEUTRAL', score: 50 }, { mode: 'dip' }).approved, false);
+    assert.equal(checkConfluence(neutral, bear, { mode: 'dip' }).approved, false);
+    assert.equal(checkConfluence(bear, bull, { mode: 'dip' }).approved, false, 'entry timeframe in outright downtrend = knife');
+});
+
+test('volatility: detectReversal needs a real pullback + capitulation volume + reversal candle', () => {
+    const ok = detectReversal(dipCandles({ vol: capitulation }), null, { now: NOW });
+    assert.equal(ok.available, true); assert.equal(ok.reversalDetected, true); assert.equal(ok.breakoutDetected, false);
+    assert.ok(ok.volatilityScore >= 50);
+    const noVol = detectReversal(dipCandles(), null, { now: NOW });
+    assert.equal(noVol.reversalDetected, false, 'no capitulation volume');
+    assert.ok(noVol.volatilityScore <= 49);
+    const stillFalling = detectReversal(gen('15m', 120, (i) => dipArr(120, 5, 0.9, 0)[i], { range: 0.001, vol: capitulation }), null, { now: NOW });
+    assert.equal(stillFalling.reversalDetected, false, 'no reversal candle yet');
+    const shallow = detectReversal(gen('15m', 120, (i) => 100 + (i >= 117 ? (i - 116) * 0.05 : 0) + (i === 116 ? -0.02 : 0), { range: 0.001, vol: capitulation }), null, { now: NOW });
+    assert.equal(shallow.reversalDetected, false, 'no real pullback = nothing to buy');
+    assert.equal(detectReversal(null, null, { now: NOW }).available, false);
+    assert.equal(detectBreakout(dipCandles(), null, { now: NOW }).reversalDetected, undefined, 'breakout brain untouched');
+});
+
+test('risk: dip stop under the swing low, bounded; plan uses it with reward:risk target', () => {
+    const tc = loadConfig({}).technical;
+    const ok = dipLevels(100, 98, tc);
+    assert.ok(Math.abs(ok.stopPrice - 97.902) < 1e-9); assert.equal(ok.rr, 2);
+    assert.match(dipLevels(100, 99.6, tc).error, /allowed/, 'too tight = noise');
+    assert.match(dipLevels(100, 90, tc).error, /allowed/, 'too far = not near the bottom');
+    assert.ok(dipLevels(100, NaN, tc).error);
+    const rp = { max_risk_per_trade_percent: 2, stop_loss_percent: 2.5, take_profit_percent: 5 };
+    const tech = { action: 'BUY', setup: 'dip', signal: { swingLow: 98 } };
+    assert.equal(evaluateRisk(tech, rp, { price: 100, tc }).approved, true);
+    assert.equal(evaluateRisk({ ...tech, signal: { swingLow: 90 } }, rp, { price: 100, tc }).approved, false);
+    assert.equal(evaluateRisk({ action: 'BUY', setup: 'trend', signal: {} }, rp, { price: 100, tc }).approved, true, 'trend entries keep the fixed %');
+    const plan = buildPlan({ price: 100, riskParams: rp, equityUSDT: 1000, availableUSDT: 1000, slippagePct: 0, minPositionUSDT: 10, levels: ok });
+    assert.ok(Math.abs(plan.stopLoss - ok.stopPrice) < 1e-9);
+    assert.ok(Math.abs(plan.takeProfit - (100 + 2 * (100 - ok.stopPrice))) < 1e-9);
+    assert.equal(plan.positionSizeUSDT, 905.5 > 1000 ? 1000 : plan.positionSizeUSDT);
+    const capped = buildPlan({ price: 100, riskParams: rp, equityUSDT: 1000, availableUSDT: 1000, slippagePct: 0, minPositionUSDT: 10, levels: ok, maxPositionPercent: 25 });
+    assert.equal(capped.positionSizeUSDT, 250, 'tight stop would size huge: the 25% cap binds');
+});
+
+test('coordinator: dip uses contrarian sentiment and counts reversal volume; decision carries the setup', () => {
+    const cfg = loadConfig({});
+    const base = {
+        tech: { action: 'BUY', setup: 'dip', score: 80 }, risk: { approved: true }, sentiment: { available: true, score: 20 },
+        liquidity: { status: 'GOOD' }, macro: { available: true, approved: true, macroScore: 80 },
+        mtf: { available: true, approved: true, confluenceScore: 80 },
+        vol: { available: true, breakoutDetected: false, reversalDetected: true, volatilityScore: 90 }, plan: { positionSizeUSDT: 50 }
+    };
+    const flags = { positionOpen: false, maxPositions: false, insufficientBalance: false };
+    const dip = decide(base, flags, cfg);
+    assert.equal(dip.setup, 'dip');
+    const trend = decide({ ...base, tech: { ...base.tech, setup: 'trend' } }, flags, cfg);
+    assert.ok(dip.overallConfidence > trend.overallConfidence, 'fear (20) helps a dip, hurts a trend entry');
+    const noRev = decide({ ...base, vol: { ...base.vol, reversalDetected: false, volatilityScore: 30 } }, flags, cfg);
+    assert.ok(noRev.overallConfidence !== dip.overallConfidence, 'reversal score only counts when detected');
+    assert.equal(decide({ ...base, tech: { action: 'HOLD', score: 10, setup: null } }, flags, cfg).setup, null);
+});
+
+test('reflection + engine: setup is stored and win rate is reported per setup', () => {
+    const e = new PaperEngine({ startingBalance: 1000, feePct: 0.1, slippagePct: 0.05, now: () => NOW });
+    const plan = { entry: 1, stopLoss: 0.9, takeProfit: 1.2, positionSizeUSDT: 10 };
+    assert.equal(e.open({ exchange: 'x', symbol: 'A/USDT', plan, score: 70 }).setup, 'trend', 'legacy default');
+    assert.equal(e.open({ exchange: 'x', symbol: 'B/USDT', plan, score: 70, setup: 'dip' }).setup, 'dip');
+    const mk = (setup, result, i) => ({ status: 'CLOSED', result, setup, closedAt: i });
+    const r = evaluateReflection([mk('dip', 'WIN', 1), mk('dip', 'WIN', 2), mk('dip', 'LOSS', 3), mk('trend', 'LOSS', 4), mk('trend', 'LOSS', 5), mk(undefined, 'WIN', 6)]);
+    assert.deepEqual({ dip: r.bySetup.dip.n, trend: r.bySetup.trend.n }, { dip: 3, trend: 3 });
+    assert.equal(r.bySetup.dip.winRate, 66.7);
+    assert.match(r.recommendation, /dip 2\/3/);
+    assert.match(r.recommendation, /trend 1\/3/);
+});
+
+test('scan end-to-end: a confirmed dip inside an uptrend opens a trade with a swing-low stop, tagged "dip"', async () => {
+    const arr = dipArr();
+    const symbols = { 'D1/USDT': { path15: (i) => arr[i], path1h: up, range: 0.001, vol15: capitulation } };
+    const tickers = { 'D1/USDT': goodTicker(arr[119]) };
+    const { scanner, engine } = setup({ symbols, tickers }, { configMutate: (c) => { c.brain_settings.min_confidence_score = 40; } });
+    const r = await scanner.scan(body({ symbols: ['D1/USDT'] }));
+    const res = r.results[0];
+    assert.equal(res.brains.technical.setup, 'dip', JSON.stringify(res.coordinator));
+    assert.equal(res.brains.multiTimeframe.alignment === 'PULLBACK_UPTREND' || res.brains.multiTimeframe.alignment === 'STRONG_ALIGNMENT', true);
+    assert.equal(res.brains.volatility.reversalDetected, true);
+    assert.equal(res.coordinator.finalDecision, 'BUY', JSON.stringify(res.coordinator));
+    assert.equal(engine.openCount(), 1);
+    const t = engine.openTrades()[0];
+    assert.equal(t.setup, 'dip');
+    const swing = res.brains.technical.signal.swingLow;
+    assert.ok(Math.abs(t.stopLoss - swing * 0.999) < 1e-6, 'stop is under the swing low, not a fixed %');
+    assert.ok(Math.abs((t.takeProfit - t.entry) - 2 * (t.entry - t.stopLoss)) < 1e-6, 'target is 2R');
+    assert.ok(t.sizeUSDT <= 250 + 1e-9, 'still capped at 25% of equity');
+});
+
+test('scan: trend-only mode ignores dips, a dip with a too-distant swing low is rejected by risk', async () => {
+    const arr = dipArr();
+    const symbols = { 'D2/USDT': { path15: (i) => arr[i], path1h: up, range: 0.001, vol15: capitulation } };
+    const tickers = { 'D2/USDT': goodTicker(arr[119]) };
+    const lo = (c) => { c.brain_settings.min_confidence_score = 40; };
+    const a = setup({ symbols, tickers }, { configMutate: (c) => { lo(c); c.technical.entry_mode = 'trend'; } });
+    const r1 = await a.scanner.scan(body({ symbols: ['D2/USDT'] }));
+    assert.equal(r1.results[0].brains.technical.action, 'HOLD');
+    assert.equal(a.engine.openCount(), 0);
+    const b = setup({ symbols, tickers }, { configMutate: (c) => { lo(c); c.technical.dip_max_risk_pct = 1.0; } });
+    const r2 = await b.scanner.scan(body({ symbols: ['D2/USDT'] }));
+    assert.equal(r2.results[0].brains.risk.approved, false);
+    assert.match(r2.results[0].brains.risk.reasoning, /allowed/);
+    assert.ok(r2.results[0].coordinator.blockedBy.includes('risk'));
+    assert.equal(r2.results[0].coordinator.blockedBy.includes('insufficient_balance'), false, 'a risk rejection is not a balance problem');
+    assert.equal(b.engine.openCount(), 0);
 });

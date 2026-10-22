@@ -3,14 +3,18 @@ const { isNum } = require('./lib/indicators');
 
 const enabled = (cfg, name) => cfg.brains[name]?.enabled !== false;
 const round2 = (x) => Number(x.toFixed(2));
+// For dip entries fear is an opportunity, not a warning: Fear & Greed is read contrarian (fear 20 -> 68, greed 80 -> 32).
+const contrarian = (fng) => Math.max(0, Math.min(100, 50 + (50 - fng) * 0.6));
 
 // Paper position plan. Size = risk amount / stop distance, capped by free balance and by
 // maxPositionPercent of equity (when given).
 // Returns null when the free balance cannot cover the minimum position.
-function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, minPositionUSDT, maxPositionPercent }) {
+function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, minPositionUSDT, maxPositionPercent, levels }) {
     if (![price, equityUSDT, availableUSDT].every(isNum) || price <= 0) return null;
     const entry = price * (1 + slippagePct / 100);
-    const sl = riskParams.stop_loss_percent / 100;
+    // levels (dip entries): absolute stop + reward:risk multiple; otherwise the fixed % from riskParams.
+    const sl = levels ? (entry - levels.stopPrice) / entry : riskParams.stop_loss_percent / 100;
+    if (!(sl > 0 && sl < 1)) return null;
     const riskAmount = equityUSDT * (riskParams.max_risk_per_trade_percent / 100);
     const caps = [riskAmount / sl, availableUSDT];
     if (isNum(maxPositionPercent) && maxPositionPercent > 0) caps.push(equityUSDT * (maxPositionPercent / 100));
@@ -20,7 +24,7 @@ function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, 
         simulated: true,
         entry,
         stopLoss: entry * (1 - sl),
-        takeProfit: entry * (1 + riskParams.take_profit_percent / 100),
+        takeProfit: levels ? entry * (1 + levels.rr * sl) : entry * (1 + riskParams.take_profit_percent / 100),
         positionSizeUSDT: round2(size)
     };
 }
@@ -45,7 +49,7 @@ function decide(inputs, flags, cfg) {
 
     if (enabled(cfg, 'sentiment')) {
         if (!sentiment?.available) blockedBy.push('sentiment_unavailable');
-        else parts.push([sentiment.score, w.sentiment]);
+        else parts.push([tech.setup === 'dip' ? contrarian(sentiment.score) : sentiment.score, w.sentiment]);
     }
     if (enabled(cfg, 'macro')) {
         if (!macro?.approved) blockedBy.push('macro');
@@ -55,7 +59,7 @@ function decide(inputs, flags, cfg) {
         if (!mtf?.approved) blockedBy.push('multi_timeframe');
         if (mtf?.available) parts.push([mtf.confluenceScore, w.multi_timeframe]);
     }
-    if (enabled(cfg, 'volatility') && vol?.available && (vol.breakoutDetected || !bs.volatility_counts_only_on_breakout)) {
+    if (enabled(cfg, 'volatility') && vol?.available && (vol.breakoutDetected || vol.reversalDetected || !bs.volatility_counts_only_on_breakout)) {
         parts.push([vol.volatilityScore, w.volatility]);
     }
     if (enabled(cfg, 'liquidity') && liquidity?.status !== 'GOOD') blockedBy.push('liquidity');
@@ -75,6 +79,7 @@ function decide(inputs, flags, cfg) {
     const finalDecision = blockedBy.length === 0 ? 'BUY' : 'HOLD';
     return {
         finalDecision,
+        setup: wantsBuy ? (tech.setup || null) : null,
         overallConfidence: overall,
         blockedBy,
         plan: finalDecision === 'BUY' ? plan : null

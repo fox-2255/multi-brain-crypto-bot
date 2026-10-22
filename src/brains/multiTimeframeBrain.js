@@ -10,7 +10,8 @@ const DEFAULTS = {
     trendEma: { fast: 20, slow: 50 },
     bullishAt: 65,
     bearishAt: 35,
-    allowMixed: false       // true: entry BULLISH + trend NEUTRAL also approved
+    allowMixed: false,      // true: entry BULLISH + trend NEUTRAL also approved
+    mode: 'trend'           // 'dip': approve a pullback (entry not BEARISH) inside a BULLISH higher-timeframe trend
     // now: injectable clock for tests
 };
 
@@ -61,6 +62,22 @@ function checkConfluence(tech15m, tech1h, opts = {}) {
     const e = tech15m.bias;
     const t = tech1h.bias;
     const avg = (tech15m.score + tech1h.score) / 2;
+
+    if (opts.mode === 'dip') {
+        // A dip is by definition a weak entry timeframe: what matters is that the higher trend is intact.
+        const approvedDip = t === 'BULLISH' && e !== 'BEARISH';
+        const alignmentDip = approvedDip ? (e === 'BULLISH' ? 'STRONG_ALIGNMENT' : 'PULLBACK_UPTREND')
+            : (t === 'BEARISH' || e === 'BEARISH' ? 'CONFLICT' : 'MIXED');
+        const scoreDip = approvedDip ? 0.4 * tech15m.score + 0.6 * tech1h.score
+            : Math.min(avg, alignmentDip === 'CONFLICT' ? 30 : 59);
+        return {
+            confluenceScore: Math.round(clamp(scoreDip, 0, 100)),
+            alignment: alignmentDip,
+            approved: approvedDip,
+            direction: approvedDip ? 'BULLISH' : null,
+            reasoning: `Dip mode: entry ${e}, trend ${t} -> ${alignmentDip}. ${approvedDip ? 'Pullback inside an intact uptrend.' : 'Higher trend not bullish: dip not confirmed.'}`
+        };
+    }
 
     let alignment;
     let direction = null;

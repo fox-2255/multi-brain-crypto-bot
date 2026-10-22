@@ -1,5 +1,5 @@
 // Technical Brain: EMA trend structure + RSI momentum filter on the entry timeframe (15m).
-const { prepareCandles, ema, rsi, atrSeries, clamp, mean, isNum, timeframeToMs } = require('../lib/indicators');
+const { prepareCandles, ema, rsi, rsiSeries, atrSeries, clamp, mean, isNum, timeframeToMs } = require('../lib/indicators');
 
 const DEFAULTS = {
     timeframe: '15m',
@@ -14,14 +14,18 @@ const DEFAULTS = {
     volLookback: 20,
     volWindow: 3,        // candles averaged for the volume gate (one candle is too noisy)
     minVolRatio: 0,      // 0 = gate off; else avg volume of last volWindow candles / prior baseline must reach this
-    buyScore: 60
+    buyScore: 60,
+    entryMode: 'trend',  // 'trend' | 'dip' | 'both' (the server passes config.technical.entry_mode)
+    dipRsi: 40,          // dip: RSI must have been <= this within the lookback
+    dipLookback: 8,      // candles to look back for the dip (touch of EMA slow + oversold RSI)
+    swingLookback: 12    // candles used for the swing low (stop-loss anchor of a dip entry)
     // now: injectable clock for tests
 };
 
 const round = (x, dp) => (isNum(x) ? Number(x.toFixed(dp)) : null);
 
 function hold(reason, score = 0, signal = null) {
-    return { action: 'HOLD', score, reasoning: `HOLD: ${reason}`, signal };
+    return { action: 'HOLD', setup: null, score, reasoning: `HOLD: ${reason}`, signal };
 }
 
 // ohlcv: ccxt rows (newest may still be forming; it is dropped). ticker: optional, only used for 24h change.
@@ -91,14 +95,81 @@ function analyzeTechnical(ohlcv, ticker = null, opts = {}) {
     if (cfg.minVolRatio > 0 && !(volRatioAvg >= cfg.minVolRatio)) fails.push(`volume weak (x${signal.volRatioAvg} avg of last ${win} candles, need x${cfg.minVolRatio})`);
     if (score < cfg.buyScore) fails.push(`score ${score} below ${cfg.buyScore}`);
 
-    if (fails.length) return hold(fails.join('; '), score, signal);
+    const trendBuy = fails.length === 0;
+    const wantDip = cfg.entryMode === 'dip' || cfg.entryMode === 'both';
+    const wantTrend = cfg.entryMode === 'trend' || cfg.entryMode === 'both';
+
+    if (wantDip) {
+        const dip = evaluateDip(c, closes, ema(closes, cfg.emaSlow), { slow, rsiNow, volRatioAvg }, cfg);
+        if (dip.ok) {
+            return {
+                action: 'BUY',
+                setup: 'dip',
+                score: dip.score,
+                reasoning: dip.reasoning,
+                signal: { ...signal, setup: 'dip', swingLow: dip.swingLow, rsiLow: dip.rsiLow, lowerWick: dip.lowerWick }
+            };
+        }
+        if (!wantTrend) return hold(`no dip entry (${dip.why.join('; ')})`, score, signal);
+    }
+
+    if (!wantTrend || !trendBuy) return hold(fails.join('; ') || 'trend setup not allowed in this mode', score, signal);
 
     const stack = `EMA${cfg.emaFast}>EMA${cfg.emaSlow}${slow > trend ? `>EMA${cfg.emaTrend}` : ''}`;
     return {
         action: 'BUY',
+        setup: 'trend',
         score,
         reasoning: `Uptrend: ${stack}, RSI ${signal.rsi}, ROC1h ${signal.roc1hPct >= 0 ? '+' : ''}${signal.roc1hPct}%, vol x${signal.volRatio}, ${signal.extAtr} ATR above EMA${cfg.emaSlow}.`,
-        signal
+        signal: { ...signal, setup: 'trend' }
+    };
+}
+
+// "Buy the dip" = a CONFIRMED reversal after a pullback (never the falling candle itself):
+//   1. within the last dipLookback candles price touched EMA slow AND RSI fell to <= dipRsi
+//   2. the last closed candle is green, closes above the previous candle's high and above EMA slow
+//   3. RSI is rising
+// The stop is anchored under the recent swing low (see riskBrain.dipLevels). The higher-timeframe
+// uptrend is NOT checked here: the multi-timeframe brain (mode "dip") and macro brain gate that.
+function evaluateDip(c, closes, emaSlowSeries, { slow, rsiNow, volRatioAvg }, cfg) {
+    const n = c.length;
+    const L = cfg.dipLookback;
+    const rsis = rsiSeries(closes, cfg.rsiPeriod);
+    const last = c[n - 1];
+    const prev = c[n - 2];
+    const idx = Array.from({ length: L }, (_, k) => n - L + k);
+
+    const touched = idx.some((k) => c[k].low <= emaSlowSeries[k]);
+    const rsiLow = Math.min(...idx.map((k) => rsis[k]));
+    const green = last.close > last.open;
+    const breaksPrevHigh = last.close > prev.high;
+    const rising = rsiNow > rsis[n - 2];
+    const swingLow = Math.min(...c.slice(n - cfg.swingLookback).map((x) => x.low));
+    const range = last.high - last.low;
+    const lowerWick = range > 0 ? (Math.min(last.open, last.close) - last.low) / range : 0;
+
+    const why = [];
+    if (!touched) why.push(`no pullback to EMA${cfg.emaSlow}`);
+    if (!(rsiLow <= cfg.dipRsi)) why.push(`RSI low ${round(rsiLow, 1)} not <= ${cfg.dipRsi}`);
+    if (!green) why.push('last candle not green');
+    if (!breaksPrevHigh) why.push('close not above previous high');
+    if (!(last.close > slow)) why.push(`close below EMA${cfg.emaSlow}`);
+    if (!rising) why.push('RSI not rising');
+    if (why.length) return { ok: false, why };
+
+    const score = Math.round(clamp(
+        60
+        + clamp((cfg.dipRsi - rsiLow) / 15, 0, 1) * 15
+        + clamp((volRatioAvg - 0.8) / 0.7, 0, 1) * 15
+        + (lowerWick >= 0.4 ? 10 : 0),
+        0, 100));
+    return {
+        ok: true,
+        score,
+        swingLow,
+        rsiLow: round(rsiLow, 1),
+        lowerWick: round(lowerWick, 2),
+        reasoning: `Dip reversal: RSI ${round(rsiLow, 1)} -> ${round(rsiNow, 1)}, pulled back to EMA${cfg.emaSlow} then green close above previous high; swing low ${swingLow}.`
     };
 }
 

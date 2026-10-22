@@ -31,7 +31,20 @@ function normalizeRiskParams(raw = {}) {
     };
 }
 
-function evaluateRisk(techSignal, riskParams) {
+// Dip entries use a structural stop just under the recent swing low instead of the fixed %, with the
+// target at rr x the risk. Returns { stopPrice, rr, slPct } or { error } (stop too tight = noise,
+// too far = the dip is not "near the bottom").
+function dipLevels(price, swingLow, tc) {
+    if (![price, swingLow].every(Number.isFinite) || price <= 0 || swingLow <= 0) return { error: 'No swing low available.' };
+    const stopPrice = swingLow * 0.999;
+    const slPct = ((price - stopPrice) / price) * 100;
+    if (!(slPct >= tc.dip_min_risk_pct && slPct <= tc.dip_max_risk_pct)) {
+        return { error: `Swing-low stop is ${slPct.toFixed(2)}% away; allowed ${tc.dip_min_risk_pct}-${tc.dip_max_risk_pct}%.` };
+    }
+    return { stopPrice, rr: tc.dip_rr, slPct };
+}
+
+function evaluateRisk(techSignal, riskParams, ctx = {}) {
     if (!techSignal || techSignal.action !== 'BUY') {
         return { approved: false, reasoning: 'No valid BUY signal from Technical Brain.' };
     }
@@ -39,10 +52,18 @@ function evaluateRisk(techSignal, riskParams) {
     if (error) {
         return { approved: false, reasoning: `REJECTED: ${error}` };
     }
+    if (techSignal.setup === 'dip' && ctx.tc) {
+        const lv = dipLevels(ctx.price, techSignal.signal?.swingLow, ctx.tc);
+        if (lv.error) return { approved: false, reasoning: `REJECTED: ${lv.error}` };
+        return {
+            approved: true,
+            reasoning: `APPROVED: dip entry, stop under swing low (${lv.slPct.toFixed(2)}% away), target ${lv.rr}R.`
+        };
+    }
     return {
         approved: true,
         reasoning: `APPROVED: Risk parameters checked. Stop-loss at ${value.stop_loss_percent}%.`
     };
 }
 
-module.exports = { evaluateRisk, normalizeRiskParams, LIMITS };
+module.exports = { evaluateRisk, normalizeRiskParams, dipLevels, LIMITS };

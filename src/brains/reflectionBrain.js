@@ -9,12 +9,24 @@ function evaluateReflection(trades = [], opts = {}) {
         .slice(-cfg.window);
 
     const sample = closed.length;
+    const bySetup = {};
+    for (const t of closed) {
+        const k = t.setup || 'trend';
+        const b = (bySetup[k] = bySetup[k] || { n: 0, wins: 0 });
+        b.n += 1;
+        if (t.result === 'WIN') b.wins += 1;
+    }
+    for (const b of Object.values(bySetup)) b.winRate = Number(((b.wins / b.n) * 100).toFixed(1));
+    const setupNote = Object.keys(bySetup).length > 1
+        ? ` By setup: ${Object.entries(bySetup).map(([k, b]) => `${k} ${b.wins}/${b.n} (${b.winRate}%)`).join(', ')}.`
+        : '';
     if (sample < cfg.minSample) {
         return {
             status: 'INSUFFICIENT_DATA',
             sample,
             winRate: null,
-            recommendation: `Need at least ${cfg.minSample} closed trades before adjusting.`
+            bySetup,
+            recommendation: `Need at least ${cfg.minSample} closed trades before adjusting.${setupNote}`
         };
     }
 
@@ -25,10 +37,11 @@ function evaluateReflection(trades = [], opts = {}) {
             status: 'CAUTION',
             sample,
             winRate,
-            recommendation: `Win rate ${winRate}% over last ${sample} trades. Consider lowering risk per trade.`
+            bySetup,
+            recommendation: `Win rate ${winRate}% over last ${sample} trades. Consider lowering risk per trade.${setupNote}`
         };
     }
-    return { status: 'NORMAL', sample, winRate, recommendation: 'Maintain current risk parameters.' };
+    return { status: 'NORMAL', sample, winRate, bySetup, recommendation: `Maintain current risk parameters.${setupNote}` };
 }
 
 module.exports = { evaluateReflection };
