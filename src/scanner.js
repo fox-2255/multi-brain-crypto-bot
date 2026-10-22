@@ -128,7 +128,10 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
     function evaluate(item, ctx) {
         const { exchangeName, riskParams, macro, sentiment } = ctx;
         const t = now();
-        const tech = analyzeTechnical(item.ohlcv15, item.ticker, { now: t });
+        const tc = config.technical;
+        const tech = analyzeTechnical(item.ohlcv15, item.ticker, {
+            now: t, rsiMax: tc.rsi_max, maxExtAtr: tc.max_ext_atr, minVolRatio: tc.min_volume_ratio
+        });
         const risk = enabled('risk') ? evaluateRisk(tech, riskParams) : { approved: true, reasoning: 'Risk brain disabled.' };
         const liquidity = enabled('liquidity') ? evaluateLiquidity(item.book) : { status: 'GOOD', reasoning: 'Liquidity brain disabled.' };
         const mtf = enabled('multi_timeframe') ? evaluateMultiTimeframe(item.ohlcv15, item.ohlcv1h, { now: t }) : null;
@@ -145,12 +148,13 @@ function createScanner({ config, getExchange, analyzeSentiment, engine, now = Da
             minPositionUSDT: config.paper.min_position_usdt,
             maxPositionPercent: config.paper.max_position_percent
         });
+        const cooldown = !positionOpen && engine.inCooldown(exchangeName, item.symbol, config.paper.cooldown_minutes);
         const dailyLossHalt = engine.dailyLossHalted(config.paper.max_daily_loss_percent);
         const insufficientBalance = tech.action === 'BUY' && plan === null && !positionOpen && !maxPositions;
 
         const coordinator = decide(
             { tech, risk, sentiment, liquidity, macro, mtf, vol, plan },
-            { positionOpen, maxPositions, insufficientBalance, dailyLossHalt },
+            { positionOpen, maxPositions, insufficientBalance, dailyLossHalt, cooldown },
             config
         );
         return {

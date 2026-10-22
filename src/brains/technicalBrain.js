@@ -12,6 +12,8 @@ const DEFAULTS = {
     atrPeriod: 14,
     maxExtAtr: 2.5,      // max distance above EMA(slow), in ATR
     volLookback: 20,
+    volWindow: 3,        // candles averaged for the volume gate (one candle is too noisy)
+    minVolRatio: 0,      // 0 = gate off; else avg volume of last volWindow candles / prior baseline must reach this
     buyScore: 60
     // now: injectable clock for tests
 };
@@ -52,6 +54,10 @@ function analyzeTechnical(ohlcv, ticker = null, opts = {}) {
     const baseVol = mean(c.slice(n - 1 - cfg.volLookback, n - 1).map((x) => x.volume));
     const volRatio = baseVol > 0 ? c[n - 1].volume / baseVol : 0;
     const extAtr = (close - slow) / atr;
+    const win = cfg.volWindow;
+    const recentVol = mean(c.slice(n - win, n).map((x) => x.volume));
+    const winBase = mean(c.slice(n - win - cfg.volLookback, n - win).map((x) => x.volume));
+    const volRatioAvg = winBase > 0 ? recentVol / winBase : 0;
 
     let score = 0;
     if (fast > slow) score += 15;
@@ -70,6 +76,7 @@ function analyzeTechnical(ohlcv, ticker = null, opts = {}) {
         roc1hPct: round(roc1h, 2),
         rsi: round(rsiNow, 1),
         volRatio: round(volRatio, 2),
+        volRatioAvg: round(volRatioAvg, 2),
         extAtr: round(extAtr, 2),
         chg24hPct: isNum(ticker?.percentage) ? round(ticker.percentage, 2) : null
     };
@@ -81,6 +88,7 @@ function analyzeTechnical(ohlcv, ticker = null, opts = {}) {
     if (rsiNow > cfg.rsiMax) fails.push(`RSI ${signal.rsi} overbought`);
     if (!(roc1h > 0)) fails.push('no 1h momentum');
     if (extAtr > cfg.maxExtAtr) fails.push(`${signal.extAtr} ATR above EMA${cfg.emaSlow}, extended`);
+    if (cfg.minVolRatio > 0 && !(volRatioAvg >= cfg.minVolRatio)) fails.push(`volume weak (x${signal.volRatioAvg} avg of last ${win} candles, need x${cfg.minVolRatio})`);
     if (score < cfg.buyScore) fails.push(`score ${score} below ${cfg.buyScore}`);
 
     if (fails.length) return hold(fails.join('; '), score, signal);

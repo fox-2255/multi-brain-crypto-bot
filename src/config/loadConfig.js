@@ -31,6 +31,11 @@ function loadConfig(env = process.env) {
     }
     if (!(bs.weights.technical > 0)) throw new Error('brain_settings.weights.technical must be > 0.');
 
+    const tc = config.technical;
+    if (!isPos(tc.rsi_max) || tc.rsi_max > 100 || !isPos(tc.max_ext_atr) || !isNonNeg(tc.min_volume_ratio)) {
+        throw new Error('Invalid technical settings (rsi_max 0-100, max_ext_atr > 0, min_volume_ratio >= 0).');
+    }
+
     const p = config.paper;
     if (![p.starting_balance_usdt, p.max_open_positions, p.min_position_usdt].every(isPos)) {
         throw new Error('Invalid paper settings.');
@@ -39,6 +44,7 @@ function loadConfig(env = process.env) {
     for (const [k, v] of [['max_position_percent', p.max_position_percent], ['max_daily_loss_percent', p.max_daily_loss_percent]]) {
         if (!isPos(v) || v > 100) throw new Error(`Invalid paper.${k} (must be > 0 and <= 100).`);
     }
+    if (!isNonNeg(p.cooldown_minutes)) throw new Error('Invalid paper.cooldown_minutes (>= 0, 0 disables).');
     if (!isNonNeg(p.fee_percent) || !isNonNeg(p.slippage_percent)) throw new Error('Invalid paper fee/slippage.');
 
     const s = config.scanner;

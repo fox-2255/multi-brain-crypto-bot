@@ -73,6 +73,15 @@ class PaperEngine {
     }
     equity() { return this.startingBalance + this.realizedPnl(); }
 
+    // True when this symbol closed at a LOSS within the last `minutes` (0 disables). Stops the bot from
+    // buying straight back into a setup that just failed.
+    inCooldown(exchange, symbol, minutes) {
+        if (!(minutes > 0)) return false;
+        const since = this.now() - minutes * MINUTE_MS;
+        return this.trades.some((t) => t.status === 'CLOSED' && t.result === 'LOSS' && t.exchange === exchange
+            && t.symbol === symbol && isNum(t.closedAt) && t.closedAt >= since);
+    }
+
     // True when realized losses over the last 24h reach limitPct of the equity at the start of that
     // window. Rolling window (not calendar day) so there is no timezone edge and no reset loophole.
     dailyLossHalted(limitPct) {
@@ -137,6 +146,11 @@ class PaperEngine {
             if (!Array.isArray(row) || !row.slice(0, 5).every(isNum)) continue; // malformed row: ignore
             const [ts, open, high, low] = row;
             if (ts < trade.checkedTs) continue;
+
+            // Max favorable / adverse excursion (% from entry). Shows whether losers first went up
+            // ("uptrend that reversed") or fell straight away. Informational only.
+            trade.maxHighPct = Math.max(trade.maxHighPct ?? 0, Number(((high / trade.entry - 1) * 100).toFixed(3)));
+            trade.minLowPct = Math.min(trade.minLowPct ?? 0, Number(((low / trade.entry - 1) * 100).toFixed(3)));
 
             let exit = null;
             let reason = null;

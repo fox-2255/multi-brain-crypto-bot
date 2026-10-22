@@ -26,7 +26,7 @@ function buildPlan({ price, riskParams, equityUSDT, availableUSDT, slippagePct, 
 }
 
 // inputs: { tech, risk, sentiment, liquidity, macro, mtf, vol, plan }
-// flags:  { positionOpen, maxPositions, insufficientBalance, dailyLossHalt }
+// flags:  { positionOpen, maxPositions, insufficientBalance, dailyLossHalt, cooldown }
 //
 // Gating brains (any one blocks): technical signal, risk, sentiment availability, liquidity,
 // macro, multi-timeframe, position/balance limits.
@@ -68,6 +68,7 @@ function decide(inputs, flags, cfg) {
     else if (wantsBuy) {
         if (flags.maxPositions) blockedBy.push('max_positions');
         if (flags.dailyLossHalt) blockedBy.push('daily_loss_limit');
+        if (flags.cooldown) blockedBy.push('cooldown');
         if (flags.insufficientBalance) blockedBy.push('insufficient_balance');
     }
 

@@ -8,6 +8,11 @@
     "stop_loss_percent": 2.5,
     "take_profit_percent": 5
   },
+  "technical": {
+    "rsi_max": 68,
+    "max_ext_atr": 1.5,
+    "min_volume_ratio": 1.0
+  },
   "brain_settings": {
     "min_confidence_score": 70,
     "weights": {
@@ -45,6 +50,7 @@
     "max_open_positions": 3,
     "max_position_percent": 25,
     "max_daily_loss_percent": 5,
+    "cooldown_minutes": 240,
     "min_position_usdt": 10
   }
 }

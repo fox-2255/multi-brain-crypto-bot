@@ -432,3 +432,78 @@ test('scan: daily loss halt blocks new entries but not the scan', async () => {
     assert.equal(engine.openCount(), 0);
     assert.ok(r.results[0].coordinator.blockedBy.includes('daily_loss_limit'));
 });
+
+test('technical: volume gate uses the last 3 candles, anti-chase limits are configurable', () => {
+    const lowTail = (i) => (i >= 117 ? 30 : 100);
+    const c = gen('15m', 120, buyPath, { vol: lowTail });
+    assert.equal(analyzeTechnical(c, null, { now: NOW }).action, 'BUY', 'gate is off unless minVolRatio > 0');
+    const gated = analyzeTechnical(c, null, { now: NOW, minVolRatio: 1.0 });
+    assert.equal(gated.action, 'HOLD');
+    assert.match(gated.reasoning, /volume weak/);
+    assert.ok(gated.signal.volRatioAvg < 0.4);
+    // one hot candle (x1.5) among two quiet ones averages to x0.7: a single-candle spike is not enough
+    const spike = gen('15m', 120, buyPath, { vol: (i) => (i === 119 ? 150 : i >= 117 ? 30 : 100) });
+    assert.equal(analyzeTechnical(spike, null, { now: NOW, minVolRatio: 1.0 }).action, 'HOLD');
+    const ok = gen('15m', 120, buyPath, { vol: (i) => (i >= 117 ? 130 : 100) });
+    assert.equal(analyzeTechnical(ok, null, { now: NOW, minVolRatio: 1.0 }).action, 'BUY');
+    // extension / RSI ceilings are options
+    const sig = analyzeTechnical(gen('15m', 120, buyPath), null, { now: NOW }).signal;
+    const tight = analyzeTechnical(gen('15m', 120, buyPath), null, { now: NOW, maxExtAtr: sig.extAtr - 0.01, rsiMax: sig.rsi - 0.1 });
+    assert.equal(tight.action, 'HOLD');
+    assert.match(tight.reasoning, /extended/);
+    assert.match(tight.reasoning, /overbought/);
+});
+
+test('engine: cooldown after a loss only, per symbol, expires', () => {
+    let t = NOW;
+    const e = new PaperEngine({ startingBalance: 1000, feePct: 0.1, slippagePct: 0.05, now: () => t });
+    const closed = (symbol, result, closedAt) => e.trades.push({ id: e.nextId++, exchange: 'x', symbol, status: 'CLOSED', result, pnlUSDT: result === 'LOSS' ? -5 : 5, closedAt, openedAt: closedAt - 1, entry: 1, stopLoss: 1, takeProfit: 1, sizeUSDT: 1, checkedTs: closedAt });
+    closed('A/USDT', 'LOSS', t - 60 * MIN);
+    closed('B/USDT', 'WIN', t - 60 * MIN);
+    assert.equal(e.inCooldown('x', 'A/USDT', 240), true);
+    assert.equal(e.inCooldown('x', 'B/USDT', 240), false, 'wins do not trigger cooldown');
+    assert.equal(e.inCooldown('x', 'C/USDT', 240), false, 'other symbols unaffected');
+    assert.equal(e.inCooldown('y', 'A/USDT', 240), false, 'other exchanges unaffected');
+    assert.equal(e.inCooldown('x', 'A/USDT', 0), false, '0 disables');
+    t += 181 * MIN; // 60 + 181 > 240
+    assert.equal(e.inCooldown('x', 'A/USDT', 240), false, 'expired');
+});
+
+test('engine: records max favorable / adverse excursion while settling', () => {
+    let t = NOW;
+    const e = new PaperEngine({ startingBalance: 1000, feePct: 0.1, slippagePct: 0.05, now: () => t });
+    const plan = { entry: 100, stopLoss: 97.5, takeProfit: 105, positionSizeUSDT: 100 };
+    const tr = e.open({ exchange: 'x', symbol: 'M/USDT', plan, score: 80 });
+    const m = (k, o, h, l, c) => [NOW + k * MIN, o, h, l, c, 1];
+    // up 1.8%, back down, then the stop: an "uptrend that reversed"
+    assert.equal(e.settle(tr.id, [m(0, 100, 101.8, 99.9, 101), m(1, 101, 101.2, 98, 98.5)]), null);
+    let cur = e.get(tr.id);
+    assert.equal(cur.maxHighPct, 1.8);
+    assert.equal(cur.minLowPct, -2);
+    const closedTrade = e.settle(tr.id, [m(2, 98.5, 98.6, 97.4, 97.5)]);
+    assert.equal(closedTrade.exitReason, 'STOP_LOSS');
+    assert.equal(closedTrade.maxHighPct, 1.8, 'kept on the closed trade');
+    assert.ok(closedTrade.minLowPct <= -2.6);
+});
+
+test('config: technical and cooldown settings validated', () => {
+    const defaults = require(path.join(SRC, 'config', 'defaultConfig.json'));
+    assert.deepEqual(loadConfig({}).technical, { rsi_max: 68, max_ext_atr: 1.5, min_volume_ratio: 1.0 });
+    assert.equal(loadConfig({}).paper.cooldown_minutes, 240);
+    const cases = [[defaults.technical, 'rsi_max', 101], [defaults.technical, 'max_ext_atr', 0], [defaults.technical, 'min_volume_ratio', -1], [defaults.paper, 'cooldown_minutes', -5]];
+    for (const [obj, k, v] of cases) {
+        const old = obj[k]; obj[k] = v;
+        try { assert.throws(() => loadConfig({}), /Invalid/, `${k}=${v}`); } finally { obj[k] = old; }
+    }
+});
+
+test('scan: a symbol that just lost is in cooldown, a fresh one still opens', async () => {
+    const symbols = { 'K1/USDT': { path15: buyPath, path1h: up }, 'K2/USDT': { path15: buyPath, path1h: up } };
+    const tickers = { 'K1/USDT': goodTicker(), 'K2/USDT': goodTicker() };
+    const { scanner, engine } = setup({ symbols, tickers });
+    engine.trades.push({ id: 901, exchange: 'mock', symbol: 'K1/USDT', status: 'CLOSED', result: 'LOSS', pnlUSDT: -1, pnlPct: -2.7, closedAt: NOW - 30 * MIN, openedAt: NOW - 60 * MIN, entry: 1, stopLoss: 1, takeProfit: 1, sizeUSDT: 40, checkedTs: NOW - 30 * MIN });
+    const r = await scanner.scan(body({ symbols: ['K1/USDT', 'K2/USDT'] }));
+    const get = (s) => r.results.find((x) => x.symbol === s);
+    assert.ok(get('K1/USDT').coordinator.blockedBy.includes('cooldown'));
+    assert.equal(get('K2/USDT').coordinator.finalDecision, 'BUY');
+});
