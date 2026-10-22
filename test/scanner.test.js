@@ -713,3 +713,21 @@ test('auto-scan: loop calls scan, survives errors and backs off', async () => {
     assert.equal(delays[1], 30000);          // after 1 failure: 15s * 2
     assert.equal(delays[2], 15000);          // success resets the backoff
 });
+
+test('config: local override file is deep-merged, validated, and optional', () => {
+    const fs = require('node:fs'); const os = require('node:os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mbcb-cfg-'));
+    const f = path.join(dir, 'config.local.json');
+    assert.equal(loadConfig({}, f).technical.entry_mode, 'both');            // missing file -> defaults
+    fs.writeFileSync(f, JSON.stringify({ technical: { entry_mode: 'dip' }, paper: { max_open_positions: 8, max_position_percent: 12 } }));
+    const c = loadConfig({}, f);
+    assert.equal(c.technical.entry_mode, 'dip');
+    assert.equal(c.technical.rsi_max, 68);                                    // siblings kept
+    assert.equal(c.paper.max_open_positions, 8);
+    assert.equal(c.paper.max_position_percent, 12);
+    assert.equal(loadConfig({}).paper.max_open_positions, 3);                 // defaults untouched
+    fs.writeFileSync(f, JSON.stringify({ technical: { entry_mode: 'nope' } }));
+    assert.throws(() => loadConfig({}, f), /Invalid technical\.entry_mode/);
+    fs.writeFileSync(f, '{ not json');
+    assert.throws(() => loadConfig({}, f), /Invalid .*config\.local\.json/);
+});

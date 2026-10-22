@@ -70,7 +70,8 @@ function startSettleLoop({ scanner, engine, intervalSec, log }) {
 }
 
 function main() {
-    const config = loadConfig();
+    const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
+    const config = loadConfig(process.env, path.join(dataDir, 'config.local.json'));
     const log = createLogger(process.env.LOG_LEVEL);
     const ccxt = require('ccxt');
 
@@ -81,7 +82,6 @@ function main() {
         return exchanges.get(name);
     }
 
-    const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
     const engine = new PaperEngine({
         file: path.join(dataDir, 'trades.json'),
         startingBalance: config.paper.starting_balance_usdt,

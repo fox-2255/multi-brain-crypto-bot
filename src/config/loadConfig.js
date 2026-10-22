@@ -3,9 +3,28 @@ const defaults = require('./defaultConfig.json');
 const isPos = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 const isNonNeg = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
 
-// defaultConfig.json + env overrides (PORT, HOST, PAPER_BALANCE_USDT), validated.
-function loadConfig(env = process.env) {
+const fs = require('node:fs');
+
+// Recursive merge for the optional local override file (arrays and scalars are replaced).
+function deepMerge(target, src) {
+    for (const [k, v] of Object.entries(src)) {
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+        if (v !== null && typeof v === 'object' && !Array.isArray(v) && target[k] !== null && typeof target[k] === 'object' && !Array.isArray(target[k])) deepMerge(target[k], v);
+        else target[k] = v;
+    }
+    return target;
+}
+
+// defaultConfig.json + optional local override file (e.g. data/config.local.json, never committed)
+// + env overrides (PORT, HOST, PAPER_BALANCE_USDT), validated.
+function loadConfig(env = process.env, overrideFile = null) {
     const config = JSON.parse(JSON.stringify(defaults));
+    if (overrideFile && fs.existsSync(overrideFile)) {
+        let local;
+        try { local = JSON.parse(fs.readFileSync(overrideFile, 'utf8')); } catch (err) { throw new Error(`Invalid ${overrideFile}: ${err.message}`); }
+        if (local === null || typeof local !== 'object' || Array.isArray(local)) throw new Error(`Invalid ${overrideFile}: must be a JSON object.`);
+        deepMerge(config, local);
+    }
 
     if (env.PORT !== undefined && env.PORT !== '') {
         const port = Number(env.PORT);

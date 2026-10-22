@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const path = require('node:path');
 
 // Server-side scan loop: the bot keeps scanning (and can catch a dip) even when the APK is closed.
 // It reuses the last scan request the UI sent (pairs, exchange, risk params), persisted across restarts.
@@ -27,6 +28,7 @@ function loadRequest(file, log = () => {}) {
 
 function saveRequest(file, req, log = () => {}) {
     try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
         const tmp = `${file}.tmp`;
         fs.writeFileSync(tmp, JSON.stringify(req));
         fs.renameSync(tmp, file);
